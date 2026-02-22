@@ -1,0 +1,17 @@
+#!/bin/bash
+# Voice-to-editor: dictate → edit → send to Claude Code
+# Used as $EDITOR with Claude Code's Ctrl+G (chat:externalEditor)
+
+FILE="$1"
+REAL_EDITOR="${DICTATE_EDITOR:-/usr/bin/nvim}"
+
+# Get voice input from daemon
+TEXT=$(dictate --once 2>/dev/null)
+
+if [ -n "$TEXT" ]; then
+    # Prepend dictated text to the editor file
+    echo "$TEXT" > "$FILE"
+fi
+
+# Open editor for review/editing
+exec "$REAL_EDITOR" "$FILE"

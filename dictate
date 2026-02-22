@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""Push-to-talk dictation using faster-whisper and evdev."""
+"""Push-to-talk dictation using faster-whisper and evdev.
+
+Modes:
+  dictate              - push-to-talk daemon (hold key to record, clipboard output)
+  dictate --serve      - background daemon (model stays loaded, listens on socket)
+  dictate --once       - send record request to daemon, print transcription to stdout
+"""
 
 import argparse
+import json
+import os
+import signal
+import socket
 import subprocess
 import sys
+from pathlib import Path
 from selectors import DefaultSelector, EVENT_READ
 
 import evdev
@@ -13,6 +24,8 @@ from evdev import ecodes
 from faster_whisper import WhisperModel
 
 SAMPLE_RATE = 16000
+SOCK_PATH = os.path.expanduser("~/.local/share/dictate/dictate.sock")
+PID_PATH = os.path.expanduser("~/.local/share/dictate/dictate.pid")
 
 
 def find_audio_device():
@@ -21,11 +34,10 @@ def find_audio_device():
     for i, dev in enumerate(devices):
         if dev['max_input_channels'] > 0 and 'pipewire' in dev['name'].lower():
             return i
-    return None  # use system default
+    return None
 
 
 def has_cuda():
-    """Check if CUDA is available via ctranslate2."""
     try:
         import ctranslate2
         return len(ctranslate2.get_supported_compute_types("cuda")) > 0
@@ -34,7 +46,6 @@ def has_cuda():
 
 
 def pick_defaults():
-    """Auto-detect hardware and return (device, compute_type, model)."""
     if has_cuda():
         return "cuda", "int8", "medium"
     else:
@@ -42,7 +53,6 @@ def pick_defaults():
 
 
 def find_keyboards():
-    """Find all keyboard devices (those with letter keys)."""
     found = []
     devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
     for dev in devices:
@@ -57,27 +67,24 @@ def find_keyboards():
 
 
 def list_devices():
-    """List all input devices that have keys."""
     devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
     for dev in devices:
         if ecodes.EV_KEY in dev.capabilities():
             print(f"  {dev.path}: {dev.name}")
 
 
-def run_once(model, language):
-    """Record until silence, transcribe once, print to stdout."""
-    # Phase 1: calibrate ambient noise for 0.5s
+def record_until_silence(audio_dev, silence_secs=3):
+    """Record audio, stop after silence_secs of silence following speech."""
+    # Calibrate
     calibration_rms = []
 
-    def cal_callback(indata, frames, time_info, status):
+    def cal_cb(indata, frames, time_info, status):
         calibration_rms.append(np.sqrt(np.mean(indata ** 2)))
 
-    audio_dev = find_audio_device()
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-        callback=cal_callback, device=audio_dev,
+        callback=cal_cb, device=audio_dev,
     )
-    print("Calibrating mic...", file=sys.stderr, end=" ", flush=True)
     stream.start()
     sd.sleep(500)
     stream.stop()
@@ -85,17 +92,15 @@ def run_once(model, language):
 
     ambient = np.mean(calibration_rms) if calibration_rms else 0.01
     speech_threshold = ambient * 1.5 + 0.01
-    print(f"ambient={ambient:.4f}, threshold={speech_threshold:.4f}", file=sys.stderr, flush=True)
 
-    # Phase 2: record until silence after speech
+    # Record
     audio_buffer = []
     is_recording = True
     speech_detected = False
     silence_frames = 0
-    # ~64ms per callback at 16kHz/1024 blocksize, 30 frames ≈ 2s
-    SILENCE_LIMIT = 30
+    silence_limit = int(silence_secs / 0.064)  # ~64ms per callback
 
-    def audio_callback(indata, frames, time_info, status):
+    def audio_cb(indata, frames, time_info, status):
         nonlocal speech_detected, silence_frames, is_recording
         audio_buffer.append(indata.copy())
         rms = np.sqrt(np.mean(indata ** 2))
@@ -104,15 +109,13 @@ def run_once(model, language):
             silence_frames = 0
         elif speech_detected:
             silence_frames += 1
-            if silence_frames >= SILENCE_LIMIT:
+            if silence_frames >= silence_limit:
                 is_recording = False
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-        callback=audio_callback, device=audio_dev,
+        callback=audio_cb, device=audio_dev,
     )
-
-    print("Speak now... (stops after 2s of silence)", file=sys.stderr, flush=True)
     stream.start()
 
     try:
@@ -125,74 +128,107 @@ def run_once(model, language):
         stream.close()
 
     if not audio_buffer or not speech_detected:
-        return
+        return None
 
-    audio = np.concatenate(audio_buffer, axis=0).flatten()
-    print("Transcribing...", file=sys.stderr, flush=True)
-    segments, _ = model.transcribe(audio, language=language)
-    text = " ".join(seg.text for seg in segments).strip()
+    return np.concatenate(audio_buffer, axis=0).flatten()
+
+
+# ── Daemon (--serve) ──────────────────────────────────────────────
+
+def serve(model, language, audio_dev):
+    """Run as a background daemon. Listen on Unix socket for record requests."""
+    Path(SOCK_PATH).parent.mkdir(parents=True, exist_ok=True)
+    if os.path.exists(SOCK_PATH):
+        os.unlink(SOCK_PATH)
+
+    # Write PID file
+    with open(PID_PATH, "w") as f:
+        f.write(str(os.getpid()))
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCK_PATH)
+    server.listen(1)
+
+    def cleanup(signum=None, frame=None):
+        server.close()
+        for p in (SOCK_PATH, PID_PATH):
+            if os.path.exists(p):
+                os.unlink(p)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    print(f"Daemon ready. PID={os.getpid()}, socket={SOCK_PATH}")
+    print("Waiting for requests...\n")
+
+    try:
+        while True:
+            conn, _ = server.accept()
+            try:
+                data = conn.recv(1024).decode().strip()
+                req = json.loads(data) if data else {}
+                silence = req.get("silence_secs", 3)
+
+                print("● Recording...", end="", flush=True)
+                audio = record_until_silence(audio_dev, silence_secs=silence)
+
+                if audio is None:
+                    print(" (no speech)\n")
+                    conn.sendall(json.dumps({"text": ""}).encode())
+                    continue
+
+                duration = len(audio) / SAMPLE_RATE
+                print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
+
+                lang = req.get("language", language)
+                segments, _ = model.transcribe(audio, language=lang)
+                text = " ".join(seg.text for seg in segments).strip()
+
+                print(f" done.\n> {text}\n")
+                conn.sendall(json.dumps({"text": text}).encode())
+            except Exception as e:
+                print(f" error: {e}\n")
+                try:
+                    conn.sendall(json.dumps({"error": str(e)}).encode())
+                except Exception:
+                    pass
+            finally:
+                conn.close()
+    finally:
+        cleanup()
+
+
+# ── Client (--once) ───────────────────────────────────────────────
+
+def client_once(language):
+    """Send a record request to the daemon and print the result."""
+    if not os.path.exists(SOCK_PATH):
+        print("Daemon not running. Start it with: dictate --serve", file=sys.stderr)
+        sys.exit(1)
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(SOCK_PATH)
+    sock.sendall(json.dumps({"language": language}).encode())
+
+    # Read full response
+    chunks = []
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    sock.close()
+
+    resp = json.loads(b"".join(chunks).decode())
+    text = resp.get("text", "")
     if text:
         print(text)
 
 
-def main():
-    hw_device, hw_compute, hw_model = pick_defaults()
+# ── Push-to-talk (default) ───────────────────────────────────────
 
-    parser = argparse.ArgumentParser(description="Push-to-talk dictation")
-    parser.add_argument(
-        "--key", default="RIGHTCTRL",
-        help="Trigger key name without KEY_ prefix (default: RIGHTCTRL)",
-    )
-    parser.add_argument(
-        "--model", default=hw_model,
-        help=f"Whisper model size: tiny, base, small, medium, large-v3 (default: {hw_model})",
-    )
-    parser.add_argument("--device", help="Input device path (e.g. /dev/input/event3)")
-    parser.add_argument("--list-devices", action="store_true", help="List input devices")
-    parser.add_argument("--language", default="en", help="Language code (default: en)")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
-    parser.add_argument("--once", action="store_true",
-        help="Record once until silence, print transcription to stdout, and exit")
-    args = parser.parse_args()
-
-    if args.list_devices:
-        list_devices()
-        return
-
-    # Hardware setup
-    if args.cpu:
-        device, compute = "cpu", "int8"
-    else:
-        device, compute = hw_device, hw_compute
-
-    if args.once:
-        print(f"Loading whisper model '{args.model}' on {device} ({compute})...",
-              file=sys.stderr, flush=True)
-        model = WhisperModel(args.model, device=device, compute_type=compute)
-        run_once(model, args.language)
-        return
-
-    # Resolve key code
-    key_name = f"KEY_{args.key.upper()}"
-    key_code = getattr(ecodes, key_name, None)
-    if key_code is None:
-        print(f"Unknown key: {key_name}")
-        sys.exit(1)
-
-    # Find keyboards
-    if args.device:
-        keyboards = [evdev.InputDevice(args.device)]
-    else:
-        keyboards = find_keyboards()
-        if not keyboards:
-            print("No keyboard found. Try --list-devices and --device.")
-            sys.exit(1)
-
-    print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
-    model = WhisperModel(args.model, device=device, compute_type=compute)
-
-    # Open persistent audio stream
-    audio_dev = find_audio_device()
+def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev):
     audio_buffer = []
     is_recording = False
 
@@ -209,7 +245,7 @@ def main():
     print("Listening on:")
     for kbd in keyboards:
         print(f"  {kbd.name} ({kbd.path})")
-    print(f"Hold [{args.key.upper()}] to record, release to transcribe.")
+    print(f"Hold [{key_name}] to record, release to transcribe.")
     print(f"Ctrl+C to quit.\n")
 
     selector = DefaultSelector()
@@ -243,7 +279,7 @@ def main():
                         duration = len(audio) / SAMPLE_RATE
                         print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
 
-                        segments, _ = model.transcribe(audio, language=args.language)
+                        segments, _ = model.transcribe(audio, language=language)
                         text = " ".join(seg.text for seg in segments).strip()
 
                         if text:
@@ -257,6 +293,79 @@ def main():
     finally:
         stream.stop()
         stream.close()
+
+
+def main():
+    hw_device, hw_compute, hw_model = pick_defaults()
+
+    parser = argparse.ArgumentParser(description="Push-to-talk dictation")
+    parser.add_argument("--key", default="RIGHTCTRL",
+        help="Trigger key (default: RIGHTCTRL)")
+    parser.add_argument("--model", default=hw_model,
+        help=f"Whisper model (default: {hw_model})")
+    parser.add_argument("--device", help="Input device path")
+    parser.add_argument("--list-devices", action="store_true")
+    parser.add_argument("--language", default="en", help="Language (default: en)")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU")
+    parser.add_argument("--serve", action="store_true",
+        help="Run as background daemon (model stays loaded)")
+    parser.add_argument("--once", action="store_true",
+        help="Send record request to daemon, print result, exit")
+    parser.add_argument("--stop", action="store_true",
+        help="Stop the running daemon")
+    args = parser.parse_args()
+
+    if args.list_devices:
+        list_devices()
+        return
+
+    # --once: just talk to daemon
+    if args.once:
+        client_once(args.language)
+        return
+
+    # --stop: kill daemon
+    if args.stop:
+        if os.path.exists(PID_PATH):
+            pid = int(open(PID_PATH).read().strip())
+            os.kill(pid, signal.SIGTERM)
+            print(f"Stopped daemon (PID {pid}).")
+        else:
+            print("No daemon running.")
+        return
+
+    # Hardware setup
+    if args.cpu:
+        device, compute = "cpu", "int8"
+    else:
+        device, compute = hw_device, hw_compute
+
+    audio_dev = find_audio_device()
+
+    print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
+    model = WhisperModel(args.model, device=device, compute_type=compute)
+
+    # --serve: daemon mode
+    if args.serve:
+        serve(model, args.language, audio_dev)
+        return
+
+    # Default: push-to-talk
+    key_name = f"KEY_{args.key.upper()}"
+    key_code = getattr(ecodes, key_name, None)
+    if key_code is None:
+        print(f"Unknown key: {key_name}")
+        sys.exit(1)
+
+    if args.device:
+        keyboards = [evdev.InputDevice(args.device)]
+    else:
+        keyboards = find_keyboards()
+        if not keyboards:
+            print("No keyboard found. Try --list-devices and --device.")
+            sys.exit(1)
+
+    push_to_talk(model, args.language, key_code, args.key.upper(), keyboards, audio_dev)
 
 
 if __name__ == "__main__":

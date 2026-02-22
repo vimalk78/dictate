@@ -64,8 +64,10 @@ exec "\$VENV/bin/python" "$HOME/.local/share/dictate/dictate.py" "\$@"
 LAUNCHER
 chmod +x ~/.local/bin/dictate
 
-# Copy the actual script
+# Copy the actual script and editor wrapper
 cp "$(dirname "$0")/dictate" "$HOME/.local/share/dictate/dictate.py"
+cp "$(dirname "$0")/dictate-editor" ~/.local/bin/dictate-editor
+chmod +x ~/.local/bin/dictate-editor
 
 echo ""
 echo "Done! Run: dictate"
