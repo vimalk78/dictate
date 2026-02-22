@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Push-to-talk dictation using faster-whisper and evdev."""
+
+import argparse
+import subprocess
+import sys
+from selectors import DefaultSelector, EVENT_READ
+
+import evdev
+import numpy as np
+import sounddevice as sd
+from evdev import ecodes
+from faster_whisper import WhisperModel
+
+SAMPLE_RATE = 16000
+
+
+def has_cuda():
+    """Check if CUDA is available via ctranslate2."""
+    try:
+        import ctranslate2
+        return "cuda" in ctranslate2.get_supported_compute_types("cuda")
+    except Exception:
+        return False
+
+
+def pick_defaults():
+    """Auto-detect hardware and return (device, compute_type, model)."""
+    if has_cuda():
+        return "cuda", "int8_float16", "large-v3"
+    else:
+        return "cpu", "int8", "small"
+
+
+def find_keyboards():
+    """Find all keyboard devices (those with letter keys)."""
+    found = []
+    devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+    for dev in devices:
+        caps = dev.capabilities(verbose=True)
+        for (etype, _), codes in caps.items():
+            if etype == "EV_KEY":
+                key_names = [name for name, _ in codes]
+                if "KEY_A" in key_names and "KEY_ENTER" in key_names:
+                    found.append(dev)
+                    break
+    return found
+
+
+def list_devices():
+    """List all input devices that have keys."""
+    devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+    for dev in devices:
+        if ecodes.EV_KEY in dev.capabilities():
+            print(f"  {dev.path}: {dev.name}")
+
+
+def main():
+    hw_device, hw_compute, hw_model = pick_defaults()
+
+    parser = argparse.ArgumentParser(description="Push-to-talk dictation")
+    parser.add_argument(
+        "--key", default="RIGHTCTRL",
+        help="Trigger key name without KEY_ prefix (default: RIGHTCTRL)",
+    )
+    parser.add_argument(
+        "--model", default=hw_model,
+        help=f"Whisper model size: tiny, base, small, medium, large-v3 (default: {hw_model})",
+    )
+    parser.add_argument("--device", help="Input device path (e.g. /dev/input/event3)")
+    parser.add_argument("--list-devices", action="store_true", help="List input devices")
+    parser.add_argument("--language", default="en", help="Language code (default: en)")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
+    args = parser.parse_args()
+
+    if args.list_devices:
+        list_devices()
+        return
+
+    # Resolve key code
+    key_name = f"KEY_{args.key.upper()}"
+    key_code = getattr(ecodes, key_name, None)
+    if key_code is None:
+        print(f"Unknown key: {key_name}")
+        sys.exit(1)
+
+    # Find keyboards
+    if args.device:
+        keyboards = [evdev.InputDevice(args.device)]
+    else:
+        keyboards = find_keyboards()
+        if not keyboards:
+            print("No keyboard found. Try --list-devices and --device.")
+            sys.exit(1)
+
+    # Hardware setup
+    if args.cpu:
+        device, compute = "cpu", "int8"
+    else:
+        device, compute = hw_device, hw_compute
+
+    print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
+    model = WhisperModel(args.model, device=device, compute_type=compute)
+
+    # Open persistent audio stream
+    audio_buffer = []
+    is_recording = False
+
+    def audio_callback(indata, frames, time_info, status):
+        if is_recording:
+            audio_buffer.append(indata.copy())
+
+    stream = sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+        callback=audio_callback,
+    )
+    stream.start()
+
+    print("Listening on:")
+    for kbd in keyboards:
+        print(f"  {kbd.name} ({kbd.path})")
+    print(f"Hold [{args.key.upper()}] to record, release to transcribe.")
+    print(f"Ctrl+C to quit.\n")
+
+    selector = DefaultSelector()
+    for kbd in keyboards:
+        selector.register(kbd, EVENT_READ)
+
+    try:
+        while True:
+            for sel_key, _ in selector.select():
+                dev = sel_key.fileobj
+                for event in dev.read():
+                    if event.type != ecodes.EV_KEY:
+                        continue
+                    key_event = evdev.categorize(event)
+                    if key_event.scancode != key_code:
+                        continue
+
+                    if key_event.keystate == evdev.KeyEvent.key_down and not is_recording:
+                        audio_buffer.clear()
+                        is_recording = True
+                        print("● Recording...", end="", flush=True)
+
+                    elif key_event.keystate == evdev.KeyEvent.key_up and is_recording:
+                        is_recording = False
+
+                        if not audio_buffer:
+                            print(" (no audio captured)\n")
+                            continue
+
+                        audio = np.concatenate(audio_buffer, axis=0).flatten()
+                        duration = len(audio) / SAMPLE_RATE
+                        print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
+
+                        segments, _ = model.transcribe(audio, language=args.language)
+                        text = " ".join(seg.text for seg in segments).strip()
+
+                        if text:
+                            subprocess.run(["wl-copy", text])
+                            print(f" done. [copied]\n> {text}\n")
+                        else:
+                            print(" (no speech detected)\n")
+
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        stream.stop()
+        stream.close()
+
+
+if __name__ == "__main__":
+    main()

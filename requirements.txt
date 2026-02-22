@@ -1,0 +1,4 @@
+faster-whisper
+evdev
+sounddevice
+numpy
