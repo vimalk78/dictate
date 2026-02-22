@@ -23,7 +23,8 @@ local function on_dictate_done()
   dictate_output = ''
 
   if result ~= '' then
-    show('> ' .. result, 'String')
+    local words = #vim.split(result, '%s+', {trimempty = true})
+    show('Inserted ' .. words .. ' words', 'String')
     local lines = vim.split(result, '\n')
     vim.api.nvim_put(lines, 'c', true, true)
   else
