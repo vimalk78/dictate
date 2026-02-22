@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.dictate-hints.d/
