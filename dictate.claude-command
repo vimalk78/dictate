@@ -1,0 +1,11 @@
+Run the dictate tool to capture voice input from the user. Execute this command:
+
+```
+dictate --once
+```
+
+This sends a record request to the dictate daemon (which keeps the Whisper model loaded in memory). The daemon records audio, auto-stops after 3 seconds of silence, transcribes, and returns the text.
+
+If the daemon is not running, tell the user to start it with `dictate --serve &` in another terminal.
+
+Treat the transcribed text as the user's message and respond to it normally.

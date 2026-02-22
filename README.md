@@ -28,10 +28,53 @@ bash install.sh
 
 Reboot or re-login once (for `input` group membership).
 
+## Daemon mode
+
+Keep the model loaded in memory for instant transcription:
+
+```
+dictate --serve &
+```
+
+Then use the lightweight client anywhere:
+
+```
+dictate --once
+```
+
+Stop the daemon:
+
+```
+dictate --stop
+```
+
+## Claude Code integration
+
+### /dictate command
+
+Copy the custom command to your Claude Code config:
+
+```
+mkdir -p ~/.claude/commands
+cp dictate.claude-command ~/.claude/commands/dictate.md
+```
+
+Start the daemon, then use `/dictate` in Claude Code to speak your prompt.
+
+### Voice-to-editor (Ctrl+G)
+
+Launch Claude Code with the voice editor:
+
+```
+EDITOR=dictate-editor claude
+```
+
+Press **Ctrl+G** — it records your voice, opens the transcription in nvim for editing, and sends the final text to Claude when you save and quit.
+
 ## Uninstall
 
 ```
-rm -rf ~/.local/share/dictate ~/.local/bin/dictate
+rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
 ```
 
 ## Usage
