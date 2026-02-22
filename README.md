@@ -1,8 +1,8 @@
 # dictate
 
-Voice-to-text for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Talk to Claude instead of typing.
+Voice-to-text for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on Linux. Talk to Claude instead of typing.
 
-Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offline speech-to-text — no cloud transcription, no API keys.
+Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offline speech-to-text on Linux/Wayland — no cloud transcription, no API keys.
 
 ### Demo
 
