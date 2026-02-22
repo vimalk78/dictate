@@ -15,6 +15,15 @@ from faster_whisper import WhisperModel
 SAMPLE_RATE = 16000
 
 
+def find_audio_device():
+    """Find the best input device, preferring pipewire."""
+    devices = sd.query_devices()
+    for i, dev in enumerate(devices):
+        if dev['max_input_channels'] > 0 and 'pipewire' in dev['name'].lower():
+            return i
+    return None  # use system default
+
+
 def has_cuda():
     """Check if CUDA is available via ctranslate2."""
     try:
@@ -55,6 +64,77 @@ def list_devices():
             print(f"  {dev.path}: {dev.name}")
 
 
+def run_once(model, language):
+    """Record until silence, transcribe once, print to stdout."""
+    # Phase 1: calibrate ambient noise for 0.5s
+    calibration_rms = []
+
+    def cal_callback(indata, frames, time_info, status):
+        calibration_rms.append(np.sqrt(np.mean(indata ** 2)))
+
+    audio_dev = find_audio_device()
+    stream = sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+        callback=cal_callback, device=audio_dev,
+    )
+    print("Calibrating mic...", file=sys.stderr, end=" ", flush=True)
+    stream.start()
+    sd.sleep(500)
+    stream.stop()
+    stream.close()
+
+    ambient = np.mean(calibration_rms) if calibration_rms else 0.01
+    speech_threshold = ambient * 1.5 + 0.01
+    print(f"ambient={ambient:.4f}, threshold={speech_threshold:.4f}", file=sys.stderr, flush=True)
+
+    # Phase 2: record until silence after speech
+    audio_buffer = []
+    is_recording = True
+    speech_detected = False
+    silence_frames = 0
+    # ~64ms per callback at 16kHz/1024 blocksize, 30 frames ≈ 2s
+    SILENCE_LIMIT = 30
+
+    def audio_callback(indata, frames, time_info, status):
+        nonlocal speech_detected, silence_frames, is_recording
+        audio_buffer.append(indata.copy())
+        rms = np.sqrt(np.mean(indata ** 2))
+        if rms > speech_threshold:
+            speech_detected = True
+            silence_frames = 0
+        elif speech_detected:
+            silence_frames += 1
+            if silence_frames >= SILENCE_LIMIT:
+                is_recording = False
+
+    stream = sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+        callback=audio_callback, device=audio_dev,
+    )
+
+    print("Speak now... (stops after 2s of silence)", file=sys.stderr, flush=True)
+    stream.start()
+
+    try:
+        while is_recording:
+            sd.sleep(100)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stream.stop()
+        stream.close()
+
+    if not audio_buffer or not speech_detected:
+        return
+
+    audio = np.concatenate(audio_buffer, axis=0).flatten()
+    print("Transcribing...", file=sys.stderr, flush=True)
+    segments, _ = model.transcribe(audio, language=language)
+    text = " ".join(seg.text for seg in segments).strip()
+    if text:
+        print(text)
+
+
 def main():
     hw_device, hw_compute, hw_model = pick_defaults()
 
@@ -71,10 +151,25 @@ def main():
     parser.add_argument("--list-devices", action="store_true", help="List input devices")
     parser.add_argument("--language", default="en", help="Language code (default: en)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
+    parser.add_argument("--once", action="store_true",
+        help="Record once until silence, print transcription to stdout, and exit")
     args = parser.parse_args()
 
     if args.list_devices:
         list_devices()
+        return
+
+    # Hardware setup
+    if args.cpu:
+        device, compute = "cpu", "int8"
+    else:
+        device, compute = hw_device, hw_compute
+
+    if args.once:
+        print(f"Loading whisper model '{args.model}' on {device} ({compute})...",
+              file=sys.stderr, flush=True)
+        model = WhisperModel(args.model, device=device, compute_type=compute)
+        run_once(model, args.language)
         return
 
     # Resolve key code
@@ -93,16 +188,11 @@ def main():
             print("No keyboard found. Try --list-devices and --device.")
             sys.exit(1)
 
-    # Hardware setup
-    if args.cpu:
-        device, compute = "cpu", "int8"
-    else:
-        device, compute = hw_device, hw_compute
-
     print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
     model = WhisperModel(args.model, device=device, compute_type=compute)
 
     # Open persistent audio stream
+    audio_dev = find_audio_device()
     audio_buffer = []
     is_recording = False
 
@@ -112,7 +202,7 @@ def main():
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-        callback=audio_callback,
+        callback=audio_callback, device=audio_dev,
     )
     stream.start()
 
