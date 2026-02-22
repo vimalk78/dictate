@@ -38,15 +38,34 @@ if ! groups "$USER" | grep -q '\binput\b'; then
     echo "NOTE: Log out and back in for group change to take effect."
 fi
 
-# Install Python deps
-echo "Installing Python packages..."
-pip install -r "$(dirname "$0")/requirements.txt"
+# Create venv and install Python deps
+VENV_DIR="$HOME/.local/share/dictate/venv"
+echo "Creating venv at $VENV_DIR..."
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install -r "$(dirname "$0")/requirements.txt"
 
-# Install the script
+# Install CUDA libs if NVIDIA GPU is present
+if command -v nvidia-smi &>/dev/null; then
+    echo "NVIDIA GPU detected, installing CUDA libraries..."
+    "$VENV_DIR/bin/pip" install nvidia-cublas-cu12
+fi
+
+# Install launcher script
 echo "Installing dictate to ~/.local/bin/"
 mkdir -p ~/.local/bin
-cp "$(dirname "$0")/dictate" ~/.local/bin/dictate
+NVIDIA_LIBS="$VENV_DIR/lib64/python*/site-packages/nvidia/cublas/lib"
+cat > ~/.local/bin/dictate <<LAUNCHER
+#!/bin/bash
+VENV="$VENV_DIR"
+for d in $NVIDIA_LIBS; do
+    [ -d "\$d" ] && export LD_LIBRARY_PATH="\$d\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+done
+exec "\$VENV/bin/python" "$HOME/.local/share/dictate/dictate.py" "\$@"
+LAUNCHER
 chmod +x ~/.local/bin/dictate
+
+# Copy the actual script
+cp "$(dirname "$0")/dictate" "$HOME/.local/share/dictate/dictate.py"
 
 echo ""
 echo "Done! Run: dictate"

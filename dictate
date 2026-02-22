@@ -19,7 +19,7 @@ def has_cuda():
     """Check if CUDA is available via ctranslate2."""
     try:
         import ctranslate2
-        return "cuda" in ctranslate2.get_supported_compute_types("cuda")
+        return len(ctranslate2.get_supported_compute_types("cuda")) > 0
     except Exception:
         return False
 
@@ -27,7 +27,7 @@ def has_cuda():
 def pick_defaults():
     """Auto-detect hardware and return (device, compute_type, model)."""
     if has_cuda():
-        return "cuda", "int8_float16", "large-v3"
+        return "cuda", "int8", "medium"
     else:
         return "cpu", "int8", "small"
 
