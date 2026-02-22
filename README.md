@@ -1,24 +1,12 @@
 # dictate
 
-Push-to-talk voice-to-text for Linux using [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
+Voice-to-text for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Talk to Claude instead of typing.
 
-Hold a key, speak, release — transcribed text is copied to clipboard.
+Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offline speech-to-text — no cloud transcription, no API keys.
 
-## How it works
+## Claude Code setup
 
-- Persistent audio stream via `sounddevice` (zero startup delay)
-- Key press/release detection via `evdev` (works globally, any window)
-- Transcription via `faster-whisper` (runs locally, offline, no cloud)
-- Output via `wl-copy` (Wayland clipboard)
-
-## Requirements
-
-- Linux with Wayland (tested on Fedora 43, should work on Ubuntu)
-- Python 3.10+
-- A microphone
-- NVIDIA GPU (optional, falls back to CPU)
-
-## Install
+### 1. Install
 
 ```
 git clone https://github.com/vimalk78/dictate.git
@@ -28,75 +16,87 @@ bash install.sh
 
 Reboot or re-login once (for `input` group membership).
 
-## Daemon mode
+### 2. Start the daemon
 
-Keep the model loaded in memory for instant transcription:
+The daemon keeps the Whisper model loaded in memory for instant transcription:
 
 ```
 dictate --serve &
 ```
 
-Then use the lightweight client anywhere:
+### 3. Use with Claude Code
 
-```
-dictate --once
-```
+There are two ways to talk to Claude:
 
-Stop the daemon:
-
-```
-dictate --stop
-```
-
-## Claude Code integration
-
-### /dictate command
-
-Copy the custom command to your Claude Code config:
+**Option A: `/dictate` command** — speak directly in the Claude Code prompt
 
 ```
 mkdir -p ~/.claude/commands
 cp dictate.claude-command ~/.claude/commands/dictate.md
 ```
 
-Start the daemon, then use `/dictate` in Claude Code to speak your prompt.
+Type `/dictate` in Claude Code, speak your prompt, pause when done. Claude hears you and responds.
 
-### Voice-to-editor (Ctrl+G)
-
-Launch Claude Code with the voice editor:
+**Option B: Voice editor (Ctrl+G)** — dictate into an editor, review before sending
 
 ```
 EDITOR=dictate-editor claude
 ```
 
-Press **Ctrl+G** — it records your voice, opens the transcription in nvim for editing, and sends the final text to Claude when you save and quit.
+Press **Ctrl+G** to open a voice-enabled nvim editor:
 
-## Uninstall
+| Key | Action |
+|-----|--------|
+| **F5** | Start recording |
+| **F6** | Stop recording and transcribe |
+| **F7** | Toggle spell checker |
+| `:wq` | Send text to Claude |
 
-```
-rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
-```
+You can press F5 multiple times to dictate in chunks — edit, spell-check, and refine before sending. Recording auto-stops after 3 seconds of silence.
 
-## Usage
+## How it works
+
+- Daemon mode with pre-loaded Whisper model — no startup delay per request
+- Persistent audio stream via `sounddevice` — zero recording latency
+- 1-second rolling pre-buffer — captures speech from the moment you hit the key
+- Key detection via `evdev` — works globally across all windows
+- Runs entirely locally — no internet, no cloud APIs, no data leaves your machine
+
+## Standalone usage
+
+Also works as a general-purpose push-to-talk tool outside Claude Code:
 
 ```
 dictate
 ```
 
-- Hold **Right Ctrl** to record
-- Release to transcribe
-- **Ctrl+V** to paste
+Hold **Right Ctrl** to record, release to transcribe, **Ctrl+V** to paste anywhere.
 
 ## Options
 
 ```
+dictate --serve              # start daemon (keeps model loaded)
+dictate --once               # send one request to daemon
+dictate --stop               # stop daemon
+dictate --stop-recording     # stop current recording immediately
 dictate --key PAUSE          # use a different trigger key
 dictate --model small        # smaller/faster model
 dictate --model large-v3     # best accuracy (needs >4GB VRAM)
-dictate --language hi         # Hindi, or any supported language
-dictate --cpu                 # force CPU inference
-dictate --list-devices        # show available input devices
-dictate --device /dev/input/event6  # use specific keyboard device
+dictate --language hi        # Hindi, or any supported language
+dictate --cpu                # force CPU inference
+dictate --list-devices       # show available audio input devices
+```
+
+## Configuration
+
+Edit `~/.config/dictate/config.toml`:
+
+```toml
+language = "en"
+key = "RIGHTCTRL"
+pre_buffer_secs = 1.0
+silence_secs = 3.0
+wait_secs = 10.0
 ```
 
 ## Hardware auto-detection
@@ -105,6 +105,19 @@ dictate --device /dev/input/event6  # use specific keyboard device
 |----------|-------|---------|
 | NVIDIA GPU | medium | int8 (CUDA) |
 | CPU only | small | int8 |
+
+## Requirements
+
+- Linux with Wayland (tested on Fedora 43, should work on Ubuntu)
+- Python 3.10+
+- A microphone
+- NVIDIA GPU (optional, falls back to CPU)
+
+## Uninstall
+
+```
+rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
+```
 
 ## Tested on
 
