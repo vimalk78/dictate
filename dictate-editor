@@ -70,7 +70,17 @@ vim.keymap.set({'n', 'i'}, '<F6>', function()
   end
 end, { desc = 'Stop recording & transcribe' })
 
-show('[dictate-editor] F5 = dictate, F6 = stop & transcribe. :wq when done.', 'Title')
+-- F7: toggle spell checker
+vim.keymap.set({'n', 'i'}, '<F7>', function()
+  vim.wo.spell = not vim.wo.spell
+  if vim.wo.spell then
+    show('Spell ON  — ]s/[s = next/prev, z= = suggest, zg = add word', 'WarningMsg')
+  else
+    show('Spell OFF', 'Comment')
+  end
+end, { desc = 'Toggle spell check' })
+
+show('[dictate-editor] F5 = dictate, F6 = stop, F7 = spell. :wq when done.', 'Title')
 LUA
 
 exec "$REAL_EDITOR" -c "luafile $NVIM_INIT" "$FILE"
