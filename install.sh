@@ -69,7 +69,15 @@ cp "$(dirname "$0")/dictate" "$HOME/.local/share/dictate/dictate.py"
 cp "$(dirname "$0")/dictate-editor" ~/.local/bin/dictate-editor
 chmod +x ~/.local/bin/dictate-editor
 
+# Install default config (don't overwrite existing)
+mkdir -p ~/.config/dictate
+if [ ! -f ~/.config/dictate/config.toml ]; then
+    cp "$(dirname "$0")/config.toml.example" ~/.config/dictate/config.toml
+    echo "Created config at ~/.config/dictate/config.toml"
+fi
+
 echo ""
 echo "Done! Run: dictate"
 echo "  Hold Right Ctrl to record, release to transcribe."
 echo "  Ctrl+V to paste the transcribed text."
+echo "  Edit ~/.config/dictate/config.toml to customize."

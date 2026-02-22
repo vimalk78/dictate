@@ -14,6 +14,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from selectors import DefaultSelector, EVENT_READ
 
@@ -24,8 +25,27 @@ from evdev import ecodes
 from faster_whisper import WhisperModel
 
 SAMPLE_RATE = 16000
+CONFIG_PATH = os.path.expanduser("~/.config/dictate/config.toml")
 SOCK_PATH = os.path.expanduser("~/.local/share/dictate/dictate.sock")
 PID_PATH = os.path.expanduser("~/.local/share/dictate/dictate.pid")
+
+DEFAULT_CONFIG = {
+    "language": "en",
+    "key": "RIGHTCTRL",
+    "pre_buffer_secs": 1.0,
+    "silence_secs": 3.0,
+    "wait_secs": 10.0,
+}
+
+
+def load_config():
+    """Load config from TOML file, falling back to defaults."""
+    config = dict(DEFAULT_CONFIG)
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "rb") as f:
+            user = tomllib.load(f)
+        config.update(user)
+    return config
 
 
 def find_audio_device():
@@ -154,16 +174,31 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
 
 # ── Daemon (--serve) ──────────────────────────────────────────────
 
-def serve(model, language, audio_dev):
+def serve(model, language, audio_dev, config):
     """Run as a background daemon. Listen on Unix socket for record requests."""
     speech_threshold = calibrate_mic(audio_dev)
     print(f"Mic calibrated. speech_threshold={speech_threshold:.4f}")
+
+    # Persistent audio stream with rolling pre-buffer
+    from collections import deque
+    pre_buffer_secs = config.get("pre_buffer_secs", 1.0)
+    pre_buffer_frames = int(pre_buffer_secs * SAMPLE_RATE / 1024) + 1
+    pre_buffer = deque(maxlen=pre_buffer_frames)
+
+    def prebuf_callback(indata, frames, time_info, status):
+        pre_buffer.append(indata.copy())
+
+    prebuf_stream = sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+        callback=prebuf_callback, device=audio_dev, blocksize=1024,
+    )
+    prebuf_stream.start()
+    print("Pre-buffer stream started (1s rolling buffer).")
 
     Path(SOCK_PATH).parent.mkdir(parents=True, exist_ok=True)
     if os.path.exists(SOCK_PATH):
         os.unlink(SOCK_PATH)
 
-    # Write PID file
     with open(PID_PATH, "w") as f:
         f.write(str(os.getpid()))
 
@@ -172,6 +207,8 @@ def serve(model, language, audio_dev):
     server.listen(1)
 
     def cleanup(signum=None, frame=None):
+        prebuf_stream.stop()
+        prebuf_stream.close()
         server.close()
         for p in (SOCK_PATH, PID_PATH):
             if os.path.exists(p):
@@ -190,16 +227,24 @@ def serve(model, language, audio_dev):
             try:
                 data = conn.recv(1024).decode().strip()
                 req = json.loads(data) if data else {}
-                silence = req.get("silence_secs", 3)
-                wait = req.get("wait_secs", 5)
+                silence = req.get("silence_secs", config.get("silence_secs", 3))
+                wait = req.get("wait_secs", config.get("wait_secs", 10))
 
                 def send_status(status):
                     conn.sendall((json.dumps({"status": status}) + "\n").encode())
+
+                # Grab pre-buffer snapshot before recording starts
+                pre_audio = list(pre_buffer)
 
                 send_status("recording")
                 print("● Recording...", end="", flush=True)
                 audio = record_until_silence(audio_dev, speech_threshold,
                                              silence_secs=silence, wait_secs=wait)
+
+                # Prepend pre-buffer to captured audio
+                if audio is not None and pre_audio:
+                    pre = np.concatenate(pre_audio, axis=0).flatten()
+                    audio = np.concatenate([pre, audio])
 
                 if audio is None:
                     print(" (no speech)\n")
@@ -337,16 +382,18 @@ def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev):
 
 
 def main():
+    config = load_config()
     hw_device, hw_compute, hw_model = pick_defaults()
 
     parser = argparse.ArgumentParser(description="Push-to-talk dictation")
-    parser.add_argument("--key", default="RIGHTCTRL",
-        help="Trigger key (default: RIGHTCTRL)")
+    parser.add_argument("--key", default=config.get("key", "RIGHTCTRL"),
+        help="Trigger key (default: from config)")
     parser.add_argument("--model", default=hw_model,
         help=f"Whisper model (default: {hw_model})")
     parser.add_argument("--device", help="Input device path")
     parser.add_argument("--list-devices", action="store_true")
-    parser.add_argument("--language", default="en", help="Language (default: en)")
+    parser.add_argument("--language", default=config.get("language", "en"),
+        help="Language (default: from config)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
     parser.add_argument("--serve", action="store_true",
         help="Run as background daemon (model stays loaded)")
@@ -396,7 +443,7 @@ def main():
 
     # --serve: daemon mode
     if args.serve:
-        serve(model, args.language, audio_dev)
+        serve(model, args.language, audio_dev, config)
         return
 
     # Default: push-to-talk

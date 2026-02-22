@@ -1,0 +1,19 @@
+# Dictate configuration
+# Copy to ~/.config/dictate/config.toml
+
+# Language for transcription (Whisper language code)
+language = "en"
+
+# Push-to-talk trigger key (without KEY_ prefix)
+# Examples: RIGHTCTRL, PAUSE, INSERT, F9
+key = "RIGHTCTRL"
+
+# Seconds of audio to keep before recording starts
+# Captures speech that happens before the daemon processes the request
+pre_buffer_secs = 1.0
+
+# Seconds of silence after speech to stop recording
+silence_secs = 3.0
+
+# Seconds to wait for speech before giving up
+wait_secs = 10.0
