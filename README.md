@@ -4,6 +4,10 @@ Voice-to-text for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
 Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offline speech-to-text — no cloud transcription, no API keys.
 
+### Demo
+
+https://github.com/user-attachments/assets/09645745-e30d-4945-859f-b8932bbda8c4
+
 ## Claude Code setup
 
 ### 1. Install
