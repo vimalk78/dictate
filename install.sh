@@ -76,6 +76,11 @@ if [ ! -f ~/.config/dictate/config.toml ]; then
     echo "Created config at ~/.config/dictate/config.toml"
 fi
 
+# Install global hints
+mkdir -p ~/.config/dictate/hints.d
+cp "$(dirname "$0")"/hints.d/* ~/.config/dictate/hints.d/ 2>/dev/null || true
+echo "Installed global hints to ~/.config/dictate/hints.d/"
+
 echo ""
 echo "Done! Run: dictate"
 echo "  Hold Right Ctrl to record, release to transcribe."

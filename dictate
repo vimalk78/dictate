@@ -48,6 +48,47 @@ def load_config():
     return config
 
 
+GLOBAL_HINTS_DIR = os.path.expanduser("~/.config/dictate/hints.d")
+LOCAL_HINTS_DIR = ".dictate-hints.d"
+
+
+def _read_hints_file(path):
+    """Read words from a single hints file."""
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+
+def _read_hints_dir(dirpath):
+    """Read and merge all hint files in a directory."""
+    words = []
+    if not os.path.isdir(dirpath):
+        return words
+    for name in sorted(os.listdir(dirpath)):
+        fpath = os.path.join(dirpath, name)
+        if os.path.isfile(fpath):
+            words.extend(_read_hints_file(fpath))
+    return words
+
+
+def load_hints():
+    """Load vocabulary hints. Merges: ~/.config/dictate/hints.d/* + .dictate-hints.d/* in CWD.
+    Returns initial_prompt string or None."""
+    words = []
+    words.extend(_read_hints_dir(GLOBAL_HINTS_DIR))
+    words.extend(_read_hints_dir(os.path.join(os.getcwd(), LOCAL_HINTS_DIR)))
+    # deduplicate preserving order
+    seen = set()
+    unique = []
+    for w in words:
+        if w.lower() not in seen:
+            seen.add(w.lower())
+            unique.append(w)
+    if not unique:
+        return None
+    prompt = "Technical terms: " + ", ".join(unique) + "."
+    return prompt
+
+
 def find_audio_device():
     """Find the best input device, preferring pipewire."""
     devices = sd.query_devices()
@@ -110,7 +151,17 @@ def calibrate_mic(audio_dev):
     stream.close()
 
     ambient = np.mean(calibration_rms) if calibration_rms else 0.01
-    return ambient * 1.5 + 0.01
+    threshold = ambient * 1.5 + 0.01
+    # Cap threshold — if ambient was noisy during calibration, don't make it impossible to speak
+    if threshold > 0.15:
+        print(f"  WARNING: high ambient noise (rms={ambient:.4f}), capping threshold at 0.15 (was {threshold:.4f})")
+        print(f"  Try a better microphone or move to a quieter environment.")
+        threshold = 0.15
+    elif ambient < 0.001:
+        print(f"  WARNING: very low ambient level (rms={ambient:.4f}), mic may not be picking up audio.")
+        print(f"  Check your microphone or try: dictate --list-devices")
+    print(f"  ambient_rms={ambient:.4f}, threshold={threshold:.4f}")
+    return threshold
 
 
 STOP_FLAG = os.path.expanduser("~/.local/share/dictate/stop")
@@ -128,7 +179,7 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
     audio_buffer = []
     is_recording = True
     speech_detected = False
-    last_speech_time = None
+    last_speech_time = _time.monotonic()
     start_time = _time.monotonic()
 
     def audio_cb(indata, frames, time_info, status):
@@ -174,10 +225,12 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
 
 # ── Daemon (--serve) ──────────────────────────────────────────────
 
-def serve(model, language, audio_dev, config):
+def serve(model, language, audio_dev, config, initial_prompt, verbose=False):
     """Run as a background daemon. Listen on Unix socket for record requests."""
     speech_threshold = calibrate_mic(audio_dev)
     print(f"Mic calibrated. speech_threshold={speech_threshold:.4f}")
+    if initial_prompt:
+        print(f"Vocabulary hints loaded.")
 
     # Persistent audio stream with rolling pre-buffer
     from collections import deque
@@ -225,16 +278,28 @@ def serve(model, language, audio_dev, config):
         while True:
             conn, _ = server.accept()
             try:
-                data = conn.recv(1024).decode().strip()
+                chunks = []
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks).decode().strip()
                 req = json.loads(data) if data else {}
                 silence = req.get("silence_secs", config.get("silence_secs", 3))
                 wait = req.get("wait_secs", config.get("wait_secs", 10))
+
+                if verbose:
+                    print(f"\n[debug] request: {len(data)} bytes, silence={silence}s, wait={wait}s")
 
                 def send_status(status):
                     conn.sendall((json.dumps({"status": status}) + "\n").encode())
 
                 # Grab pre-buffer snapshot before recording starts
                 pre_audio = list(pre_buffer)
+                if verbose:
+                    pre_dur = sum(len(c) for c in pre_audio) / SAMPLE_RATE if pre_audio else 0
+                    print(f"[debug] pre-buffer: {len(pre_audio)} chunks, {pre_dur:.2f}s")
 
                 send_status("recording")
                 print("● Recording...", end="", flush=True)
@@ -252,12 +317,29 @@ def serve(model, language, audio_dev, config):
                     continue
 
                 duration = len(audio) / SAMPLE_RATE
+                rms = np.sqrt(np.mean(audio ** 2))
                 send_status("transcribing")
                 print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
+                if verbose:
+                    print(f"\n[debug] audio: {duration:.2f}s, rms={rms:.4f}, threshold={speech_threshold:.4f}")
 
                 lang = req.get("language", language)
-                segments, _ = model.transcribe(audio, language=lang)
+                req_prompt = req.get("initial_prompt", initial_prompt)
+                if verbose:
+                    print(f"[debug] language={lang}")
+                    print(f"[debug] initial_prompt={'[' + str(len(req_prompt)) + ' chars] ' + req_prompt[:80] + '...' if req_prompt else 'None'}")
+
+                import time as _time
+                t0 = _time.monotonic()
+                segments, info = model.transcribe(
+                    audio, language=lang,
+                    initial_prompt=req_prompt,
+                )
                 text = " ".join(seg.text for seg in segments).strip()
+                t1 = _time.monotonic()
+
+                if verbose:
+                    print(f"[debug] transcribe took {t1-t0:.2f}s, detected_language={info.language} (p={info.language_probability:.2f})")
 
                 print(f" done.\n> {text}\n")
                 conn.sendall((json.dumps({"text": text}) + "\n").encode())
@@ -282,9 +364,15 @@ def client_once(language, status_callback=None):
         print("Daemon not running. Start it with: dictate --serve", file=sys.stderr)
         sys.exit(1)
 
+    # Load project-local hints from CWD
+    initial_prompt = load_hints()
+
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(SOCK_PATH)
-    sock.sendall(json.dumps({"language": language}).encode())
+    req = {"language": language}
+    if initial_prompt:
+        req["initial_prompt"] = initial_prompt
+    sock.sendall(json.dumps(req).encode())
     # Signal we're done sending
     sock.shutdown(socket.SHUT_WR)
 
@@ -314,7 +402,7 @@ def client_once(language, status_callback=None):
 
 # ── Push-to-talk (default) ───────────────────────────────────────
 
-def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev):
+def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, initial_prompt):
     audio_buffer = []
     is_recording = False
 
@@ -365,7 +453,10 @@ def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev):
                         duration = len(audio) / SAMPLE_RATE
                         print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
 
-                        segments, _ = model.transcribe(audio, language=language)
+                        segments, _ = model.transcribe(
+                            audio, language=language,
+                            initial_prompt=initial_prompt,
+                        )
                         text = " ".join(seg.text for seg in segments).strip()
 
                         if text:
@@ -403,6 +494,8 @@ def main():
         help="Stop the running daemon")
     parser.add_argument("--stop-recording", action="store_true",
         help="Signal the daemon to stop current recording immediately")
+    parser.add_argument("--verbose", "-v", action="store_true",
+        help="Enable debug logging")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -438,12 +531,14 @@ def main():
 
     audio_dev = find_audio_device()
 
+    initial_prompt = load_hints()
+
     print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
     model = WhisperModel(args.model, device=device, compute_type=compute)
 
     # --serve: daemon mode
     if args.serve:
-        serve(model, args.language, audio_dev, config)
+        serve(model, args.language, audio_dev, config, initial_prompt, args.verbose)
         return
 
     # Default: push-to-talk
@@ -461,7 +556,7 @@ def main():
             print("No keyboard found. Try --list-devices and --device.")
             sys.exit(1)
 
-    push_to_talk(model, args.language, key_code, args.key.upper(), keyboards, audio_dev)
+    push_to_talk(model, args.language, key_code, args.key.upper(), keyboards, audio_dev, initial_prompt)
 
 
 if __name__ == "__main__":

@@ -99,6 +99,37 @@ silence_secs = 3.0
 wait_secs = 10.0
 ```
 
+## Vocabulary hints
+
+Whisper can struggle with technical terms — "Claude" becomes "cloud", "Kubernetes" becomes "kubernetes". Hints fix this.
+
+Hints are loaded from two directories, merged together:
+
+| Directory | Scope | Ships with |
+|-----------|-------|------------|
+| `~/.config/dictate/hints.d/` | Global (always loaded) | `install.sh` |
+| `.dictate-hints.d/` in CWD | Project-specific | You or `/dictate-hints` |
+
+Each file contains one term per line (`#` comments supported). All files in both directories are merged and deduplicated.
+
+**Global hints** are installed automatically — includes common Claude, dev tooling, and language terms.
+
+**Project hints** — create `.dictate-hints.d/` in your project root and drop files in:
+
+```
+.dictate-hints.d/
+  project.hints     # MyClassName, my_function, ProjectName
+  infra.hints       # Terraform, Ansible, Helm
+```
+
+Or use `/dictate-hints` in Claude Code to auto-generate from your codebase:
+
+```
+cp dictate-hints.claude-command ~/.claude/commands/dictate-hints.md
+```
+
+Hints are sent per-request — no daemon restart needed when switching projects.
+
 ## Hardware auto-detection
 
 | Hardware | Model | Compute |

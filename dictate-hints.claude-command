@@ -1,0 +1,12 @@
+Generate vocabulary hints for voice dictation in this project.
+
+Scan the codebase and extract terms that a speech-to-text model would likely misrecognize — class names, function names, variable names, technical jargon, library names, acronyms, and project-specific vocabulary.
+
+Guidelines:
+- One term per line
+- Lines starting with # are comments
+- Include: class/struct/type names, important function names, library/tool names, domain-specific terms, proper nouns (e.g. "Claude", "Kubernetes", "PostgreSQL")
+- Skip: common English words, single-letter variables, auto-generated names
+- Keep it under 100 terms — focus on words the model is most likely to get wrong
+
+Create the directory `.dictate-hints.d/` if it doesn't exist, then write to `.dictate-hints.d/project.hints`. Do not touch other files in that directory — they may contain manually curated hints.
