@@ -1,11 +1,18 @@
-Run the dictate tool to capture voice input from the user. Execute this command:
+Run the dictate tool to capture voice input from the user. Execute this in a loop:
 
 ```
-dictate --once
+TEXT=""
+while true; do
+    CHUNK=$(dictate --once 2>/dev/null)
+    [ -z "$CHUNK" ] && break
+    TEXT="${TEXT:+$TEXT }$CHUNK"
+    echo ">> $CHUNK" >&2
+done
+echo "$TEXT"
 ```
 
-This sends a record request to the dictate daemon (which keeps the Whisper model loaded in memory). The daemon records audio, auto-stops after 3 seconds of silence, transcribes, and returns the text.
+The daemon records audio and auto-stops after 3 seconds of silence per utterance. The user can speak multiple times with pauses between. When the user stays silent for 5 seconds, the loop ends.
 
-If the daemon is not running, tell the user to start it with `dictate --serve &` in another terminal.
+If the daemon is not running, tell the user to start it with `dictate --serve` in another terminal.
 
-Treat the transcribed text as the user's message and respond to it normally.
+Treat the final accumulated text as the user's message and respond to it normally.

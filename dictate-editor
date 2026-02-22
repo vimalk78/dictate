@@ -1,17 +1,76 @@
 #!/bin/bash
-# Voice-to-editor: dictate → edit → send to Claude Code
+# Voice-to-editor: opens nvim with dictation keybindings
 # Used as $EDITOR with Claude Code's Ctrl+G (chat:externalEditor)
+# F5 = start dictation, F6 = stop recording & transcribe now
 
 FILE="$1"
 REAL_EDITOR="${DICTATE_EDITOR:-/usr/bin/nvim}"
 
-# Get voice input from daemon
-TEXT=$(dictate --once 2>/dev/null)
+NVIM_INIT=$(mktemp /tmp/dictate-nvim-XXXXXX.lua)
+cat > "$NVIM_INIT" << 'LUA'
+local dictate_job = nil
+local dictate_output = ''
 
-if [ -n "$TEXT" ]; then
-    # Prepend dictated text to the editor file
-    echo "$TEXT" > "$FILE"
-fi
+local function show(msg, hl)
+  vim.cmd('echohl ' .. (hl or 'Normal'))
+  vim.cmd('echon ' .. vim.fn.string(msg))
+  vim.cmd('echohl None')
+end
 
-# Open editor for review/editing
-exec "$REAL_EDITOR" "$FILE"
+local function on_dictate_done()
+  local result = dictate_output:gsub('%s+$', '')
+  dictate_job = nil
+  dictate_output = ''
+
+  if result ~= '' then
+    show('> ' .. result, 'String')
+    local lines = vim.split(result, '\n')
+    vim.api.nvim_put(lines, 'c', true, true)
+  else
+    show('(no speech detected)', 'Comment')
+  end
+  vim.cmd('startinsert!')
+end
+
+-- F5: start dictation (async)
+vim.keymap.set({'n', 'i'}, '<F5>', function()
+  if dictate_job then
+    show('Already recording... press F6 to stop', 'ErrorMsg')
+    return
+  end
+
+  if vim.fn.mode() == 'i' then vim.cmd('stopinsert') end
+
+  dictate_output = ''
+  dictate_job = vim.fn.jobstart('dictate --once 2>/dev/null', {
+    stdout_buffered = true,
+    on_stdout = function(_, data, _)
+      if data then
+        dictate_output = dictate_output .. table.concat(data, '\n')
+      end
+    end,
+    on_exit = function(_, _, _)
+      vim.schedule(on_dictate_done)
+    end,
+  })
+
+  -- Show message after mode change settles
+  vim.defer_fn(function()
+    show('● Recording... [F6 = stop, or 3s silence]', 'WarningMsg')
+  end, 50)
+end, { desc = 'Start dictation' })
+
+-- F6: stop recording immediately
+vim.keymap.set({'n', 'i'}, '<F6>', function()
+  if dictate_job then
+    vim.fn.system('dictate --stop-recording')
+    show('⏹ Stopping... transcribing', 'WarningMsg')
+  else
+    show('Not recording', 'Comment')
+  end
+end, { desc = 'Stop recording & transcribe' })
+
+show('[dictate-editor] F5 = dictate, F6 = stop & transcribe. :wq when done.', 'Title')
+LUA
+
+exec "$REAL_EDITOR" -c "luafile $NVIM_INIT" "$FILE"

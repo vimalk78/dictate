@@ -73,9 +73,8 @@ def list_devices():
             print(f"  {dev.path}: {dev.name}")
 
 
-def record_until_silence(audio_dev, silence_secs=3):
-    """Record audio, stop after silence_secs of silence following speech."""
-    # Calibrate
+def calibrate_mic(audio_dev):
+    """Measure ambient noise for 0.5s and return speech threshold."""
     calibration_rms = []
 
     def cal_cb(indata, frames, time_info, status):
@@ -91,25 +90,40 @@ def record_until_silence(audio_dev, silence_secs=3):
     stream.close()
 
     ambient = np.mean(calibration_rms) if calibration_rms else 0.01
-    speech_threshold = ambient * 1.5 + 0.01
+    return ambient * 1.5 + 0.01
 
-    # Record
+
+STOP_FLAG = os.path.expanduser("~/.local/share/dictate/stop")
+
+
+def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=10):
+    """Record audio. Stop after silence_secs of post-speech silence,
+    wait_secs of no speech, or STOP_FLAG file appearing."""
+    import time as _time
+
+    # Clear any stale stop flag
+    if os.path.exists(STOP_FLAG):
+        os.unlink(STOP_FLAG)
+
     audio_buffer = []
     is_recording = True
     speech_detected = False
-    silence_frames = 0
-    silence_limit = int(silence_secs / 0.064)  # ~64ms per callback
+    last_speech_time = None
+    start_time = _time.monotonic()
 
     def audio_cb(indata, frames, time_info, status):
-        nonlocal speech_detected, silence_frames, is_recording
+        nonlocal speech_detected, last_speech_time, is_recording
         audio_buffer.append(indata.copy())
         rms = np.sqrt(np.mean(indata ** 2))
+        now = _time.monotonic()
         if rms > speech_threshold:
             speech_detected = True
-            silence_frames = 0
+            last_speech_time = now
         elif speech_detected:
-            silence_frames += 1
-            if silence_frames >= silence_limit:
+            if now - last_speech_time >= silence_secs:
+                is_recording = False
+        else:
+            if now - start_time >= wait_secs:
                 is_recording = False
 
     stream = sd.InputStream(
@@ -121,6 +135,11 @@ def record_until_silence(audio_dev, silence_secs=3):
     try:
         while is_recording:
             sd.sleep(100)
+            # Check for manual stop
+            if os.path.exists(STOP_FLAG):
+                os.unlink(STOP_FLAG)
+                speech_detected = True  # treat as valid recording
+                break
     except KeyboardInterrupt:
         pass
     finally:
@@ -137,6 +156,9 @@ def record_until_silence(audio_dev, silence_secs=3):
 
 def serve(model, language, audio_dev):
     """Run as a background daemon. Listen on Unix socket for record requests."""
+    speech_threshold = calibrate_mic(audio_dev)
+    print(f"Mic calibrated. speech_threshold={speech_threshold:.4f}")
+
     Path(SOCK_PATH).parent.mkdir(parents=True, exist_ok=True)
     if os.path.exists(SOCK_PATH):
         os.unlink(SOCK_PATH)
@@ -169,16 +191,23 @@ def serve(model, language, audio_dev):
                 data = conn.recv(1024).decode().strip()
                 req = json.loads(data) if data else {}
                 silence = req.get("silence_secs", 3)
+                wait = req.get("wait_secs", 5)
 
+                def send_status(status):
+                    conn.sendall((json.dumps({"status": status}) + "\n").encode())
+
+                send_status("recording")
                 print("● Recording...", end="", flush=True)
-                audio = record_until_silence(audio_dev, silence_secs=silence)
+                audio = record_until_silence(audio_dev, speech_threshold,
+                                             silence_secs=silence, wait_secs=wait)
 
                 if audio is None:
                     print(" (no speech)\n")
-                    conn.sendall(json.dumps({"text": ""}).encode())
+                    conn.sendall((json.dumps({"text": ""}) + "\n").encode())
                     continue
 
                 duration = len(audio) / SAMPLE_RATE
+                send_status("transcribing")
                 print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
 
                 lang = req.get("language", language)
@@ -186,7 +215,7 @@ def serve(model, language, audio_dev):
                 text = " ".join(seg.text for seg in segments).strip()
 
                 print(f" done.\n> {text}\n")
-                conn.sendall(json.dumps({"text": text}).encode())
+                conn.sendall((json.dumps({"text": text}) + "\n").encode())
             except Exception as e:
                 print(f" error: {e}\n")
                 try:
@@ -201,8 +230,9 @@ def serve(model, language, audio_dev):
 
 # ── Client (--once) ───────────────────────────────────────────────
 
-def client_once(language):
-    """Send a record request to the daemon and print the result."""
+def client_once(language, status_callback=None):
+    """Send a record request to the daemon and print the result.
+    status_callback(status_str) is called for each status update."""
     if not os.path.exists(SOCK_PATH):
         print("Daemon not running. Start it with: dictate --serve", file=sys.stderr)
         sys.exit(1)
@@ -210,20 +240,31 @@ def client_once(language):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(SOCK_PATH)
     sock.sendall(json.dumps({"language": language}).encode())
+    # Signal we're done sending
+    sock.shutdown(socket.SHUT_WR)
 
-    # Read full response
-    chunks = []
+    # Read newline-delimited JSON messages
+    buf = b""
+    text = ""
     while True:
         chunk = sock.recv(4096)
         if not chunk:
             break
-        chunks.append(chunk)
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            msg = json.loads(line.decode())
+            if "status" in msg and status_callback:
+                status_callback(msg["status"])
+            elif "status" in msg:
+                print(msg["status"], file=sys.stderr, flush=True)
+            if "text" in msg:
+                text = msg["text"]
     sock.close()
 
-    resp = json.loads(b"".join(chunks).decode())
-    text = resp.get("text", "")
     if text:
         print(text)
+    return text
 
 
 # ── Push-to-talk (default) ───────────────────────────────────────
@@ -313,6 +354,8 @@ def main():
         help="Send record request to daemon, print result, exit")
     parser.add_argument("--stop", action="store_true",
         help="Stop the running daemon")
+    parser.add_argument("--stop-recording", action="store_true",
+        help="Signal the daemon to stop current recording immediately")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -322,6 +365,12 @@ def main():
     # --once: just talk to daemon
     if args.once:
         client_once(args.language)
+        return
+
+    # --stop-recording: signal daemon to stop current recording
+    if args.stop_recording:
+        Path(STOP_FLAG).parent.mkdir(parents=True, exist_ok=True)
+        Path(STOP_FLAG).touch()
         return
 
     # --stop: kill daemon
