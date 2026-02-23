@@ -334,6 +334,7 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False):
                 segments, info = model.transcribe(
                     audio, language=lang,
                     initial_prompt=req_prompt,
+                    hallucination_silence_threshold=2,
                 )
                 text = " ".join(seg.text for seg in segments).strip()
                 t1 = _time.monotonic()
@@ -456,6 +457,7 @@ def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, init
                         segments, _ = model.transcribe(
                             audio, language=language,
                             initial_prompt=initial_prompt,
+                            hallucination_silence_threshold=2,
                         )
                         text = " ".join(seg.text for seg in segments).strip()
 
