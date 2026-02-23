@@ -41,13 +41,19 @@ fi
 # Create venv and install Python deps
 VENV_DIR="$HOME/.local/share/dictate/venv"
 echo "Creating venv at $VENV_DIR..."
-python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install -r "$(dirname "$0")/requirements.txt"
+if command -v uv &>/dev/null; then
+    PIP="uv pip"
+    uv venv "$VENV_DIR"
+else
+    PIP="$VENV_DIR/bin/pip"
+    python3 -m venv "$VENV_DIR"
+fi
+$PIP install --python "$VENV_DIR/bin/python" -r "$(dirname "$0")/requirements.txt"
 
 # Install CUDA libs if NVIDIA GPU is present
 if command -v nvidia-smi &>/dev/null; then
     echo "NVIDIA GPU detected, installing CUDA libraries..."
-    "$VENV_DIR/bin/pip" install nvidia-cublas-cu12
+    $PIP install --python "$VENV_DIR/bin/python" nvidia-cublas-cu12
 fi
 
 # Install launcher script
