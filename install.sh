@@ -87,11 +87,21 @@ mkdir -p ~/.config/dictate/hints.d
 cp "$(dirname "$0")"/hints.d/* ~/.config/dictate/hints.d/ 2>/dev/null || true
 echo "Installed global hints to ~/.config/dictate/hints.d/"
 
+# Install Claude Code integration
+mkdir -p ~/.claude/commands
+cp "$(dirname "$0")/dictate.claude-command" ~/.claude/commands/dictate.md
+echo "Installed /dictate command for Claude Code."
+
 echo ""
 echo "Done! Run: dictate"
 echo "  Hold Right Ctrl to record, release to transcribe."
 echo "  Ctrl+V to paste the transcribed text."
 echo "  Edit ~/.config/dictate/config.toml to customize."
+echo ""
+echo "Claude Code integration:"
+echo "  1. Start daemon:  dictate --serve"
+echo "  2. Launch Claude:  EDITOR=dictate-editor claude"
+echo "  3. Use /dictate to speak, or Ctrl+G then F5 to dictate in editor"
 echo ""
 if grep -q "^input:.*\b$USER\b" /etc/group && ! id -nG 2>/dev/null | grep -qw input; then
     echo "⚠ IMPORTANT: Log out and back in for input group membership to take effect."
