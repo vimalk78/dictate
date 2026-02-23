@@ -86,3 +86,8 @@ echo "Done! Run: dictate"
 echo "  Hold Right Ctrl to record, release to transcribe."
 echo "  Ctrl+V to paste the transcribed text."
 echo "  Edit ~/.config/dictate/config.toml to customize."
+echo ""
+if ! groups "$USER" | grep -q '\binput\b'; then
+    echo "⚠ IMPORTANT: Log out and back in for input group membership to take effect."
+    echo "  Without this, dictate cannot detect key presses."
+fi
