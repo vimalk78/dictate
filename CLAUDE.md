@@ -115,10 +115,10 @@ JetPack 6.x ships Python 3.10 and no PyPI ctranslate2 CUDA wheels for aarch64. T
 
 1. **Build ctranslate2 from source** (once, before `install.sh`):
    ```bash
-   python3 -m venv ~/.local/share/dictate/venv
-   bash build-ctranslate2.sh ~/.local/share/dictate/venv/bin/python
+   bash build-ctranslate2.sh
    ```
-2. **Run install.sh** — detects aarch64, skips `nvidia-cublas-cu12` (CUDA libs from JetPack), uses `/usr/local/cuda/lib64` in launcher.
+   This saves a wheel to `~/.local/share/dictate/wheels/`.
+2. **Run install.sh** — detects aarch64, installs the pre-built wheel, skips `nvidia-cublas-cu12` (CUDA libs from JetPack), uses `/usr/local/cuda/lib64` in launcher.
 
 The `tomli` backport is installed automatically for Python < 3.11.
 

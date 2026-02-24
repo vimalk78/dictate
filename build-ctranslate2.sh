@@ -1,12 +1,13 @@
 #!/bin/bash
 # Build ctranslate2 from source with CUDA support (for Jetson / aarch64).
-# Usage: bash build-ctranslate2.sh /path/to/venv/bin/python
+# Saves the wheel to ~/.local/share/dictate/wheels/ for install.sh to pick up.
 set -e
 
-VENV_PYTHON="${1:?Usage: build-ctranslate2.sh /path/to/venv/bin/python}"
+WHEEL_DIR="$HOME/.local/share/dictate/wheels"
+mkdir -p "$WHEEL_DIR"
 
 # Install build deps
-sudo apt-get install -y build-essential cmake git
+sudo apt-get install -y build-essential cmake git python3-pip python3-venv
 
 # Clone and build C++ library
 BUILD_DIR="/tmp/ctranslate2-build"
@@ -19,11 +20,17 @@ make -j$(nproc)
 sudo make install
 sudo ldconfig
 
-# Build and install Python wheel into the target venv
+# Build Python wheel
 cd "$BUILD_DIR/python"
-"$VENV_PYTHON" -m pip install -r install_requirements.txt
-"$VENV_PYTHON" setup.py bdist_wheel
-"$VENV_PYTHON" -m pip install dist/ctranslate2*.whl
+python3 -m pip install -r install_requirements.txt
+python3 setup.py bdist_wheel
 
+# Save wheel
+cp dist/ctranslate2*.whl "$WHEEL_DIR/"
 rm -rf "$BUILD_DIR"
-echo "ctranslate2 installed with CUDA support."
+
+echo ""
+echo "Wheel saved to $WHEEL_DIR/"
+ls "$WHEEL_DIR"/ctranslate2*.whl
+echo ""
+echo "Now run: bash install.sh"

@@ -50,18 +50,22 @@ else
     PIP="$VENV_DIR/bin/pip"
     python3 -m venv "$VENV_DIR"
 fi
-$PIP install --python "$VENV_DIR/bin/python" -r "$(dirname "$0")/requirements.txt"
 
-# On aarch64 (Jetson): verify ctranslate2 with CUDA was pre-built
+# On aarch64 (Jetson): install pre-built ctranslate2 wheel
 if [ "$ARCH" = "aarch64" ]; then
-    if ! "$VENV_DIR/bin/python" -c "import ctranslate2; ctranslate2.get_supported_compute_types('cuda')" 2>/dev/null; then
+    WHEEL_DIR="$HOME/.local/share/dictate/wheels"
+    WHEEL=$(ls "$WHEEL_DIR"/ctranslate2*.whl 2>/dev/null | head -1)
+    if [ -z "$WHEEL" ]; then
         echo ""
-        echo "ERROR: ctranslate2 with CUDA not found. On aarch64 (Jetson), build it first:"
-        echo "  bash build-ctranslate2.sh $VENV_DIR/bin/python"
+        echo "ERROR: No ctranslate2 wheel found in $WHEEL_DIR/"
+        echo "  On aarch64 (Jetson), build it first: bash build-ctranslate2.sh"
         exit 1
     fi
-    echo "ctranslate2 with CUDA already installed."
+    echo "Installing pre-built ctranslate2 wheel: $(basename "$WHEEL")"
+    $PIP install --python "$VENV_DIR/bin/python" "$WHEEL"
 fi
+
+$PIP install --python "$VENV_DIR/bin/python" -r "$(dirname "$0")/requirements.txt"
 
 # Install CUDA libs if NVIDIA GPU is present (x86_64 only — Jetson uses JetPack system CUDA)
 if [ "$ARCH" != "aarch64" ] && command -v nvidia-smi &>/dev/null; then
