@@ -2,9 +2,11 @@
 """Push-to-talk dictation using faster-whisper and evdev.
 
 Modes:
-  dictate              - push-to-talk daemon (hold key to record, clipboard output)
-  dictate --serve      - background daemon (model stays loaded, listens on socket)
-  dictate --once       - send record request to daemon, print transcription to stdout
+  dictate                         - push-to-talk (hold key to record, clipboard output)
+  dictate --serve                 - daemon (model loaded, listens on Unix socket)
+  dictate --serve --server H:P    - daemon forwarding audio to remote GPU server
+  dictate --serve --listen H:P    - headless TCP transcription server (GPU machine)
+  dictate --once                  - send record request to daemon, print text to stdout
 """
 
 import argparse
@@ -35,6 +37,7 @@ DEFAULT_CONFIG = {
     "pre_buffer_secs": 1.0,
     "silence_secs": 3.0,
     "wait_secs": 10.0,
+    "server": "",
 }
 
 
@@ -223,9 +226,147 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
     return np.concatenate(audio_buffer, axis=0).flatten()
 
 
+# ── Transcription ────────────────────────────────────────────────
+
+def transcribe_audio(model, audio, language, initial_prompt, verbose=False):
+    """Transcribe a float32 numpy audio array. Returns text string."""
+    import time as _time
+    t0 = _time.monotonic()
+    segments, info = model.transcribe(
+        audio, language=language,
+        initial_prompt=initial_prompt,
+        hallucination_silence_threshold=2,
+    )
+    text = " ".join(seg.text for seg in segments).strip()
+    t1 = _time.monotonic()
+    if verbose:
+        print(f"[debug] transcribe took {t1-t0:.2f}s, detected_language={info.language} (p={info.language_probability:.2f})")
+    return text
+
+
+def transcribe_remote(server_addr, audio, language, initial_prompt):
+    """Send audio to remote transcription server, return text."""
+    import struct
+    host, port = server_addr
+    header = json.dumps({
+        "language": language,
+        "initial_prompt": initial_prompt or "",
+        "audio_length": len(audio) * 4,  # float32 = 4 bytes
+    }).encode()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((host, port))
+    try:
+        sock.sendall(struct.pack(">I", len(header)))
+        sock.sendall(header)
+        sock.sendall(audio.astype(np.float32).tobytes())
+        sock.shutdown(socket.SHUT_WR)
+
+        buf = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        resp = json.loads(buf.decode().strip())
+        if "error" in resp:
+            raise RuntimeError(f"Remote transcription error: {resp['error']}")
+        return resp.get("text", "")
+    finally:
+        sock.close()
+
+
+def parse_addr(addr_str):
+    """Parse HOST:PORT string into (host, port) tuple."""
+    host, port = addr_str.rsplit(":", 1)
+    return (host, int(port))
+
+
+# ── TCP transcription server (--serve --listen) ─────────────────
+
+def serve_tcp(model, listen_addr, language, verbose=False):
+    """Run headless TCP transcription server. No mic, no audio — receives audio over TCP."""
+    import struct
+    host, port = listen_addr
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(2)
+
+    def cleanup(signum=None, frame=None):
+        server.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    print(f"TCP transcription server listening on {host}:{port}")
+    print("Waiting for connections...\n")
+
+    try:
+        while True:
+            conn, addr = server.accept()
+            try:
+                print(f"Connection from {addr[0]}:{addr[1]}")
+
+                # Read header length (4 bytes, big-endian uint32)
+                raw_len = b""
+                while len(raw_len) < 4:
+                    chunk = conn.recv(4 - len(raw_len))
+                    if not chunk:
+                        raise RuntimeError("Connection closed before header length")
+                    raw_len += chunk
+                header_len = struct.unpack(">I", raw_len)[0]
+
+                # Read header
+                raw_header = b""
+                while len(raw_header) < header_len:
+                    chunk = conn.recv(header_len - len(raw_header))
+                    if not chunk:
+                        raise RuntimeError("Connection closed before header")
+                    raw_header += chunk
+                header = json.loads(raw_header.decode())
+
+                audio_length = header["audio_length"]
+                lang = header.get("language", language)
+                initial_prompt = header.get("initial_prompt", None) or None
+
+                # Read audio bytes
+                raw_audio = b""
+                while len(raw_audio) < audio_length:
+                    chunk = conn.recv(min(65536, audio_length - len(raw_audio)))
+                    if not chunk:
+                        raise RuntimeError("Connection closed before audio data")
+                    raw_audio += chunk
+
+                audio = np.frombuffer(raw_audio, dtype=np.float32)
+                duration = len(audio) / SAMPLE_RATE
+                print(f"  Audio: {duration:.1f}s, transcribing...", end="", flush=True)
+
+                if verbose:
+                    print(f"\n  [debug] language={lang}, initial_prompt={'[' + str(len(initial_prompt)) + ' chars]' if initial_prompt else 'None'}")
+
+                text = transcribe_audio(model, audio, lang, initial_prompt, verbose)
+                print(f" done.\n  > {text}\n")
+
+                resp = json.dumps({"text": text}) + "\n"
+                conn.sendall(resp.encode())
+            except Exception as e:
+                print(f"  error: {e}\n")
+                try:
+                    conn.sendall((json.dumps({"error": str(e)}) + "\n").encode())
+                except Exception:
+                    pass
+            finally:
+                conn.close()
+    finally:
+        cleanup()
+
+
 # ── Daemon (--serve) ──────────────────────────────────────────────
 
-def serve(model, language, audio_dev, config, initial_prompt, verbose=False):
+def serve(model, language, audio_dev, config, initial_prompt, verbose=False, server_addr=None):
     """Run as a background daemon. Listen on Unix socket for record requests."""
     speech_threshold = calibrate_mic(audio_dev)
     print(f"Mic calibrated. speech_threshold={speech_threshold:.4f}")
@@ -329,18 +470,10 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False):
                     print(f"[debug] language={lang}")
                     print(f"[debug] initial_prompt={'[' + str(len(req_prompt)) + ' chars] ' + req_prompt[:80] + '...' if req_prompt else 'None'}")
 
-                import time as _time
-                t0 = _time.monotonic()
-                segments, info = model.transcribe(
-                    audio, language=lang,
-                    initial_prompt=req_prompt,
-                    hallucination_silence_threshold=2,
-                )
-                text = " ".join(seg.text for seg in segments).strip()
-                t1 = _time.monotonic()
-
-                if verbose:
-                    print(f"[debug] transcribe took {t1-t0:.2f}s, detected_language={info.language} (p={info.language_probability:.2f})")
+                if server_addr:
+                    text = transcribe_remote(server_addr, audio, lang, req_prompt)
+                else:
+                    text = transcribe_audio(model, audio, lang, req_prompt, verbose)
 
                 print(f" done.\n> {text}\n")
                 conn.sendall((json.dumps({"text": text}) + "\n").encode())
@@ -496,6 +629,10 @@ def main():
         help="Stop the running daemon")
     parser.add_argument("--stop-recording", action="store_true",
         help="Signal the daemon to stop current recording immediately")
+    parser.add_argument("--listen",
+        help="TCP listen address for remote transcription server (HOST:PORT)")
+    parser.add_argument("--server",
+        help="Forward audio to remote transcription server (HOST:PORT)")
     parser.add_argument("--verbose", "-v", action="store_true",
         help="Enable debug logging")
     args = parser.parse_args()
@@ -531,19 +668,39 @@ def main():
     else:
         device, compute = hw_device, hw_compute
 
-    audio_dev = find_audio_device()
+    # Resolve server address: CLI flag overrides config
+    server_addr = None
+    server_str = args.server or config.get("server", "")
+    if server_str:
+        server_addr = parse_addr(server_str)
 
     initial_prompt = load_hints()
 
+    # --serve --listen: headless TCP transcription server (GPU machine)
+    if args.serve and args.listen:
+        listen_addr = parse_addr(args.listen)
+        print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
+        model = WhisperModel(args.model, device=device, compute_type=compute)
+        serve_tcp(model, listen_addr, args.language, args.verbose)
+        return
+
+    # --serve: daemon mode (local or forwarding)
+    if args.serve:
+        audio_dev = find_audio_device()
+        if server_addr:
+            print(f"Forwarding mode: audio will be sent to {server_addr[0]}:{server_addr[1]}")
+            model = None
+        else:
+            print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
+            model = WhisperModel(args.model, device=device, compute_type=compute)
+        serve(model, args.language, audio_dev, config, initial_prompt, args.verbose, server_addr)
+        return
+
+    # Default: push-to-talk (always local)
+    audio_dev = find_audio_device()
     print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
     model = WhisperModel(args.model, device=device, compute_type=compute)
 
-    # --serve: daemon mode
-    if args.serve:
-        serve(model, args.language, audio_dev, config, initial_prompt, args.verbose)
-        return
-
-    # Default: push-to-talk
     key_name = f"KEY_{args.key.upper()}"
     key_code = getattr(ecodes, key_name, None)
     if key_code is None:

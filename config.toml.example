@@ -17,3 +17,7 @@ silence_secs = 3.0
 
 # Seconds to wait for speech before giving up
 wait_secs = 10.0
+
+# Remote GPU transcription server (HOST:PORT)
+# When set, the local daemon forwards audio instead of transcribing locally
+# server = "192.168.1.100:5555"
