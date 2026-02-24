@@ -3,6 +3,8 @@ set -e
 
 echo "=== dictate: push-to-talk voice input ==="
 
+ARCH=$(uname -m)
+
 # Detect distro
 if [ -f /etc/os-release ]; then
     . /etc/os-release
@@ -50,8 +52,19 @@ else
 fi
 $PIP install --python "$VENV_DIR/bin/python" -r "$(dirname "$0")/requirements.txt"
 
-# Install CUDA libs if NVIDIA GPU is present
-if command -v nvidia-smi &>/dev/null; then
+# On aarch64 (Jetson): verify ctranslate2 with CUDA was pre-built
+if [ "$ARCH" = "aarch64" ]; then
+    if ! "$VENV_DIR/bin/python" -c "import ctranslate2; ctranslate2.get_supported_compute_types('cuda')" 2>/dev/null; then
+        echo ""
+        echo "ERROR: ctranslate2 with CUDA not found. On aarch64 (Jetson), build it first:"
+        echo "  bash build-ctranslate2.sh $VENV_DIR/bin/python"
+        exit 1
+    fi
+    echo "ctranslate2 with CUDA already installed."
+fi
+
+# Install CUDA libs if NVIDIA GPU is present (x86_64 only — Jetson uses JetPack system CUDA)
+if [ "$ARCH" != "aarch64" ] && command -v nvidia-smi &>/dev/null; then
     echo "NVIDIA GPU detected, installing CUDA libraries..."
     $PIP install --python "$VENV_DIR/bin/python" nvidia-cublas-cu12
 fi
@@ -59,8 +72,16 @@ fi
 # Install launcher script
 echo "Installing dictate to ~/.local/bin/"
 mkdir -p ~/.local/bin
-NVIDIA_LIBS="$VENV_DIR/lib64/python*/site-packages/nvidia/cublas/lib"
-cat > ~/.local/bin/dictate <<LAUNCHER
+if [ "$ARCH" = "aarch64" ]; then
+    cat > ~/.local/bin/dictate <<LAUNCHER
+#!/bin/bash
+VENV="$VENV_DIR"
+export LD_LIBRARY_PATH="/usr/local/cuda/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "\$VENV/bin/python" "$HOME/.local/share/dictate/dictate.py" "\$@"
+LAUNCHER
+else
+    NVIDIA_LIBS="$VENV_DIR/lib64/python*/site-packages/nvidia/cublas/lib"
+    cat > ~/.local/bin/dictate <<LAUNCHER
 #!/bin/bash
 VENV="$VENV_DIR"
 for d in $NVIDIA_LIBS; do
@@ -68,6 +89,7 @@ for d in $NVIDIA_LIBS; do
 done
 exec "\$VENV/bin/python" "$HOME/.local/share/dictate/dictate.py" "\$@"
 LAUNCHER
+fi
 chmod +x ~/.local/bin/dictate
 
 # Copy the actual script and editor wrapper

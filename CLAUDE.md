@@ -109,6 +109,19 @@ Server → Daemon:
 - **Hints are per-request**: sent in client JSON, no daemon restart when switching projects
 - **Network transcription**: local daemon records and forwards raw audio over TCP; remote server is stateless and handles transcription only. `--once` client is completely unaware of network mode
 
+## Jetson Orin Nano (aarch64)
+
+JetPack 6.x ships Python 3.10 and no PyPI ctranslate2 CUDA wheels for aarch64. Two extra steps:
+
+1. **Build ctranslate2 from source** (once, before `install.sh`):
+   ```bash
+   python3 -m venv ~/.local/share/dictate/venv
+   bash build-ctranslate2.sh ~/.local/share/dictate/venv/bin/python
+   ```
+2. **Run install.sh** — detects aarch64, skips `nvidia-cublas-cu12` (CUDA libs from JetPack), uses `/usr/local/cuda/lib64` in launcher.
+
+The `tomli` backport is installed automatically for Python < 3.11.
+
 ## Installed file locations
 
 ```

@@ -2,3 +2,4 @@ faster-whisper
 evdev
 sounddevice
 numpy
+tomli; python_version < "3.11"
