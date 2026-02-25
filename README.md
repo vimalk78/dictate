@@ -66,6 +66,31 @@ You can press F5 multiple times to dictate in chunks — edit, spell-check, and 
 - Key detection via `evdev` — works globally across all windows
 - Runs entirely locally — no internet, no cloud APIs, no data leaves your machine
 
+## Network transcription
+
+Offload transcription to a GPU machine on your LAN. The local daemon records audio and forwards it over TCP — the client (`--once`) is completely unaware of network mode.
+
+On the GPU machine (headless, no mic needed):
+
+```
+dictate --serve --listen 0.0.0.0:5555
+```
+
+On your laptop:
+
+```
+dictate --serve --server GPU_IP:5555
+dictate --once    # works exactly the same as local mode
+```
+
+Or set it permanently in `~/.config/dictate/config.toml`:
+
+```toml
+server = "192.168.1.100:5555"
+```
+
+Audio is sent as raw float32 over TCP (~64KB/s) — trivial on a LAN.
+
 ## Standalone usage
 
 Also works as a general-purpose push-to-talk tool outside Claude Code:
@@ -89,6 +114,8 @@ dictate --model large-v3     # best accuracy (needs >4GB VRAM)
 dictate --language hi        # Hindi, or any supported language
 dictate --cpu                # force CPU inference
 dictate --list-devices       # show available audio input devices
+dictate --serve --listen 0.0.0.0:5555  # headless TCP transcription server
+dictate --serve --server IP:5555       # daemon forwarding to remote GPU
 ```
 
 ## Configuration
@@ -101,6 +128,7 @@ key = "RIGHTCTRL"
 pre_buffer_secs = 1.0
 silence_secs = 3.0
 wait_secs = 10.0
+server = ""              # "HOST:PORT" for network transcription
 ```
 
 ## Vocabulary hints
@@ -143,10 +171,11 @@ Hints are sent per-request — no daemon restart needed when switching projects.
 
 ## Requirements
 
-- Linux with Wayland (tested on Fedora 43, should work on Ubuntu)
+- Linux with Wayland (tested on Fedora 43, Ubuntu 22.04)
 - Python 3.10+
-- A microphone
+- A microphone (not needed on headless transcription server)
 - NVIDIA GPU (optional, falls back to CPU)
+- For Jetson (aarch64): build ctranslate2 from source first — see `build-ctranslate2.sh`
 
 ## Uninstall
 
@@ -157,3 +186,4 @@ rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
 ## Tested on
 
 - Fedora 43, NVIDIA GTX 1650 (4GB), Keychron K8, AirPods mic
+- Jetson Orin Nano (JetPack 6.x, 8GB), network transcription server
