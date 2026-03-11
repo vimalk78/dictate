@@ -1,0 +1,12 @@
+[Unit]
+Description=Dictate voice-to-text daemon
+After=pipewire.service
+
+[Service]
+ExecStart=%h/.local/bin/dictate --serve
+ExecStop=%h/.local/bin/dictate --stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
