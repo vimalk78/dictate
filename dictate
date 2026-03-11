@@ -537,6 +537,65 @@ def client_once(language, status_callback=None):
     return text
 
 
+# ── Push-to-talk client (--ptt) ──────────────────────────────────
+
+def ptt_client(language, key_code, key_name, keyboards):
+    """Push-to-talk using the daemon. No model loading — sends requests to daemon."""
+    import threading
+
+    print("Push-to-talk (daemon mode). Listening on:")
+    for kbd in keyboards:
+        print(f"  {kbd.name} ({kbd.path})")
+    print(f"Hold [{key_name}] to record, release to transcribe. Copies to clipboard.")
+    print(f"Ctrl+C to quit.\n")
+
+    selector = DefaultSelector()
+    for kbd in keyboards:
+        selector.register(kbd, EVENT_READ)
+
+    t = None
+    try:
+        while True:
+            for sel_key, _ in selector.select():
+                dev = sel_key.fileobj
+                for event in dev.read():
+                    if event.type != ecodes.EV_KEY:
+                        continue
+                    key_event = evdev.categorize(event)
+                    if key_event.scancode != key_code:
+                        continue
+
+                    if key_event.keystate == evdev.KeyEvent.key_down and t is None:
+                        if not os.path.exists(SOCK_PATH):
+                            print("Daemon not running. Start with: dictate --serve", file=sys.stderr)
+                            continue
+                        print("● Recording...", end="", flush=True)
+                        result = {}
+                        def do_once():
+                            try:
+                                result["text"] = client_once(language, status_callback=lambda s: None)
+                            except Exception as e:
+                                result["error"] = str(e)
+                        t = threading.Thread(target=do_once, daemon=True)
+                        t.start()
+
+                    elif key_event.keystate == evdev.KeyEvent.key_up and t is not None:
+                        Path(STOP_FLAG).parent.mkdir(parents=True, exist_ok=True)
+                        Path(STOP_FLAG).touch()
+                        t.join()
+                        t = None
+                        if "error" in result:
+                            print(f" error: {result['error']}\n", file=sys.stderr)
+                        elif result.get("text"):
+                            subprocess.run(["wl-copy", result["text"]])
+                            print(f" done. [copied]\n> {result['text']}\n")
+                        else:
+                            print(" (no speech detected)\n")
+
+    except KeyboardInterrupt:
+        print("\nStopping.")
+
+
 # ── Push-to-talk (default) ───────────────────────────────────────
 
 def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, initial_prompt):
@@ -628,6 +687,8 @@ def main():
         help="Run as background daemon (model stays loaded)")
     parser.add_argument("--once", action="store_true",
         help="Send record request to daemon, print result, exit")
+    parser.add_argument("--ptt", action="store_true",
+        help="Push-to-talk using daemon (no model loading, copies to clipboard)")
     parser.add_argument("--stop", action="store_true",
         help="Stop the running daemon")
     parser.add_argument("--stop-recording", action="store_true",
@@ -647,6 +708,23 @@ def main():
     # --once: just talk to daemon
     if args.once:
         client_once(args.language)
+        return
+
+    # --ptt: push-to-talk via daemon
+    if args.ptt:
+        key_name = f"KEY_{args.key.upper()}"
+        key_code = getattr(ecodes, key_name, None)
+        if key_code is None:
+            print(f"Unknown key: {key_name}")
+            sys.exit(1)
+        if args.device:
+            keyboards = [evdev.InputDevice(args.device)]
+        else:
+            keyboards = find_keyboards()
+            if not keyboards:
+                print("No keyboard found. Try --list-devices and --device.")
+                sys.exit(1)
+        ptt_client(args.language, key_code, args.key.upper(), keyboards)
         return
 
     # --stop-recording: signal daemon to stop current recording
