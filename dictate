@@ -539,6 +539,16 @@ def client_once(language, status_callback=None):
 
 # ── Push-to-talk client (--ptt) ──────────────────────────────────
 
+SOUND_COMPLETE = "/usr/share/sounds/freedesktop/stereo/complete.oga"
+SOUND_BELL = "/usr/share/sounds/freedesktop/stereo/bell.oga"
+
+
+def play_sound(path):
+    """Play a notification sound (non-blocking)."""
+    if os.path.exists(path):
+        subprocess.Popen(["pw-play", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def ptt_client(language, key_code, key_name, device_path):
     """Push-to-talk using the daemon. No model loading — sends requests to daemon."""
     import threading
@@ -624,11 +634,14 @@ def ptt_client(language, key_code, key_name, device_path):
                         t = None
                         if "error" in result:
                             print(f" error: {result['error']}\n", file=sys.stderr)
+                            play_sound(SOUND_BELL)
                         elif result.get("text"):
                             subprocess.run(["wl-copy", result["text"]])
                             print(f" done. [copied]\n> {result['text']}\n")
+                            play_sound(SOUND_COMPLETE)
                         else:
                             print(" (no speech detected)\n")
+                            play_sound(SOUND_BELL)
 
     except KeyboardInterrupt:
         print("\nStopping.")

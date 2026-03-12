@@ -1,0 +1,12 @@
+[Unit]
+Description=Dictate push-to-talk client
+After=dictate.service
+Requires=dictate.service
+
+[Service]
+ExecStart=%h/.local/bin/dictate --ptt
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
