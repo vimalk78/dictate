@@ -565,55 +565,70 @@ def ptt_client(language, key_code, key_name, device_path):
     t = None
     try:
         while True:
-            try:
-                for sel_key, _ in selector.select():
-                    dev = sel_key.fileobj
-                    for event in dev.read():
-                        if event.type != ecodes.EV_KEY:
-                            continue
-                        key_event = evdev.categorize(event)
-                        if key_event.scancode != key_code:
-                            continue
-
-                        if key_event.keystate == evdev.KeyEvent.key_down and t is None:
-                            if not os.path.exists(SOCK_PATH):
-                                print("Daemon not running. Start with: dictate --serve", file=sys.stderr)
-                                continue
-                            print("● Recording...", end="", flush=True)
-                            result = {}
-                            def do_once():
-                                try:
-                                    result["text"] = client_once(language, status_callback=lambda s: None)
-                                except Exception as e:
-                                    result["error"] = str(e)
-                            t = threading.Thread(target=do_once, daemon=True)
-                            t.start()
-
-                        elif key_event.keystate == evdev.KeyEvent.key_up and t is not None:
-                            Path(STOP_FLAG).parent.mkdir(parents=True, exist_ok=True)
-                            Path(STOP_FLAG).touch()
-                            t.join()
-                            t = None
-                            if "error" in result:
-                                print(f" error: {result['error']}\n", file=sys.stderr)
-                            elif result.get("text"):
-                                subprocess.run(["wl-copy", result["text"]])
-                                print(f" done. [copied]\n> {result['text']}\n")
-                            else:
-                                print(" (no speech detected)\n")
-            except OSError:
-                # Keyboard device disappeared (e.g. KVM switch)
-                print("\nKeyboard disconnected, waiting for reconnect...", file=sys.stderr)
-                selector.close()
-                while True:
-                    _time.sleep(2)
+            for sel_key, _ in selector.select():
+                dev = sel_key.fileobj
+                try:
+                    events = list(dev.read())
+                except OSError:
+                    # This specific keyboard disconnected (e.g. KVM switch)
+                    print(f"\nKeyboard disconnected: {dev.name}", file=sys.stderr)
+                    selector.unregister(dev)
                     try:
-                        keyboards, selector = setup_keyboards()
-                        if keyboards:
-                            print("Keyboard reconnected.\n")
-                            break
+                        dev.close()
                     except Exception:
                         pass
+                    # Poll for reconnect in background
+                    print("Waiting for reconnect...", file=sys.stderr)
+                    while True:
+                        _time.sleep(2)
+                        try:
+                            new_kbds = find_keyboards() if not device_path else [evdev.InputDevice(device_path)]
+                            registered = {sk.fileobj.path for sk in selector.get_map().values()}
+                            added = False
+                            for kbd in new_kbds:
+                                if kbd.path not in registered:
+                                    selector.register(kbd, EVENT_READ)
+                                    print(f"Keyboard reconnected: {kbd.name} ({kbd.path})\n")
+                                    added = True
+                            if added:
+                                break
+                        except Exception:
+                            pass
+                    continue
+
+                for event in events:
+                    if event.type != ecodes.EV_KEY:
+                        continue
+                    key_event = evdev.categorize(event)
+                    if key_event.scancode != key_code:
+                        continue
+
+                    if key_event.keystate == evdev.KeyEvent.key_down and t is None:
+                        if not os.path.exists(SOCK_PATH):
+                            print("Daemon not running. Start with: dictate --serve", file=sys.stderr)
+                            continue
+                        print("● Recording...", end="", flush=True)
+                        result = {}
+                        def do_once():
+                            try:
+                                result["text"] = client_once(language, status_callback=lambda s: None)
+                            except Exception as e:
+                                result["error"] = str(e)
+                        t = threading.Thread(target=do_once, daemon=True)
+                        t.start()
+
+                    elif key_event.keystate == evdev.KeyEvent.key_up and t is not None:
+                        Path(STOP_FLAG).parent.mkdir(parents=True, exist_ok=True)
+                        Path(STOP_FLAG).touch()
+                        t.join()
+                        t = None
+                        if "error" in result:
+                            print(f" error: {result['error']}\n", file=sys.stderr)
+                        elif result.get("text"):
+                            subprocess.run(["wl-copy", result["text"]])
+                            print(f" done. [copied]\n> {result['text']}\n")
+                        else:
+                            print(" (no speech detected)\n")
 
     except KeyboardInterrupt:
         print("\nStopping.")
