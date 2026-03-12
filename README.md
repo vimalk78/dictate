@@ -91,9 +91,31 @@ server = "192.168.1.100:5555"
 
 Audio is sent as raw float32 over TCP (~64KB/s) — trivial on a LAN.
 
+## System-wide push-to-talk
+
+Press **Right Ctrl** anywhere on your desktop to record, release to transcribe. A sound plays when transcription is done — **Ctrl+V** to paste into any app. Works globally across all windows via `evdev`.
+
+Run it manually:
+
+```
+dictate --ptt
+```
+
+Or install as a background service (starts on login, no terminal needed):
+
+```
+bash install-service.sh
+```
+
+This installs two systemd user services:
+- `dictate.service` — daemon with Whisper model loaded
+- `dictate-ptt.service` — push-to-talk listener
+
+That's it — voice-to-text anywhere on your desktop. Right Ctrl, speak, release, paste.
+
 ## Standalone usage
 
-Also works as a general-purpose push-to-talk tool outside Claude Code:
+Also works as a standalone push-to-talk tool without the daemon (loads its own model):
 
 ```
 dictate
@@ -105,6 +127,7 @@ Hold **Right Ctrl** to record, release to transcribe, **Ctrl+V** to paste anywhe
 
 ```
 dictate --serve              # start daemon (keeps model loaded)
+dictate --ptt                # push-to-talk via daemon (system-wide, with sound notifications)
 dictate --once               # send one request to daemon
 dictate --stop               # stop daemon
 dictate --stop-recording     # stop current recording immediately
@@ -180,6 +203,7 @@ Hints are sent per-request — no daemon restart needed when switching projects.
 ## Uninstall
 
 ```
+bash uninstall-service.sh    # remove systemd services (if installed)
 rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
 ```
 
