@@ -1,47 +1,35 @@
 # dictate
 
-Voice-to-text for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on Linux. Talk to Claude instead of typing.
+Voice-to-text anywhere on your Linux desktop. Press a key, speak, release, paste.
 
-Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offline speech-to-text on Linux/Wayland — no cloud transcription, no API keys.
+Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offline speech-to-text — no cloud transcription, no API keys. Whisper handles capitalization and punctuation automatically.
 
 ### Demo
 
 https://github.com/user-attachments/assets/09645745-e30d-4945-859f-b8932bbda8c4
 
-## Claude Code setup
-
-### 1. Install
+## Quick start
 
 ```
 git clone https://github.com/vimalk78/dictate.git
 cd dictate
 bash install.sh
+bash install-service.sh
 ```
 
-Reboot or re-login once (for `input` group membership).
+Reboot or re-login once (for `input` group membership). That's it.
 
-### 2. Start the daemon
+Two background services start on every login:
+- **dictate** — daemon with Whisper model loaded in memory
+- **dictate-ptt** — push-to-talk listener (system-wide keyboard detection)
 
-The daemon keeps the Whisper model loaded in memory for instant transcription:
+**The flow:** press **Right Ctrl** in any window, speak, release the key. A bell rings when transcription is done. Press **Ctrl+V** to paste. Works in your terminal, browser, editor, Claude Code — anywhere.
 
-```
-dictate --serve &
-```
+No GPU required. On NVIDIA GPUs it uses the `medium` model for higher accuracy. On CPU (including Intel integrated) it uses the `small` model — still quite good for English. Works with your laptop mic, external mic, or AirPods.
 
-### 3. Use with Claude Code
+## Claude Code integration
 
-There are two ways to talk to Claude:
-
-**Option A: `/dictate` command** — speak directly in the Claude Code prompt
-
-```
-mkdir -p ~/.claude/commands
-cp dictate.claude-command ~/.claude/commands/dictate.md
-```
-
-Type `/dictate` in Claude Code, speak your prompt, pause when done. Claude hears you and responds.
-
-**Option B: Voice editor (Ctrl+G)** — dictate into an editor, review before sending
+### Voice editor (Ctrl+G)
 
 ```
 EDITOR=dictate-editor claude
@@ -56,19 +44,20 @@ Press **Ctrl+G** to open a voice-enabled nvim editor:
 | **F7** | Toggle spell checker |
 | `:wq` | Send text to Claude |
 
-You can press F5 multiple times to dictate in chunks — edit, spell-check, and refine before sending. Recording auto-stops after 3 seconds of silence.
+Dictate in chunks — edit, spell-check, and refine before sending.
 
-## How it works
+### /dictate command
 
-- Daemon mode with pre-loaded Whisper model — no startup delay per request
-- Persistent audio stream via `sounddevice` — zero recording latency
-- 1-second rolling pre-buffer — captures speech from the moment you hit the key
-- Key detection via `evdev` — works globally across all windows
-- Runs entirely locally — no internet, no cloud APIs, no data leaves your machine
+```
+mkdir -p ~/.claude/commands
+cp dictate.claude-command ~/.claude/commands/dictate.md
+```
+
+Type `/dictate` in Claude Code, speak your prompt, pause when done. Claude receives and responds to your spoken prompt.
 
 ## Network transcription
 
-Offload transcription to a GPU machine on your LAN. The local daemon records audio and forwards it over TCP — the client (`--once`) is completely unaware of network mode.
+Don't have a GPU on your laptop? Run the Whisper model on a GPU machine on your LAN and forward audio to it over TCP. The push-to-talk client doesn't know or care — it works exactly the same.
 
 On the GPU machine (headless, no mic needed):
 
@@ -80,10 +69,10 @@ On your laptop:
 
 ```
 dictate --serve --server GPU_IP:5555
-dictate --once    # works exactly the same as local mode
+bash install-service.sh
 ```
 
-Or set it permanently in `~/.config/dictate/config.toml`:
+Or set the server permanently in `~/.config/dictate/config.toml`:
 
 ```toml
 server = "192.168.1.100:5555"
@@ -91,44 +80,21 @@ server = "192.168.1.100:5555"
 
 Audio is sent as raw float32 over TCP (~64KB/s) — trivial on a LAN.
 
-## System-wide push-to-talk
+## How it works
 
-Press **Right Ctrl** anywhere on your desktop to record, release to transcribe. A sound plays when transcription is done — **Ctrl+V** to paste into any app. Works globally across all windows via `evdev`.
-
-Run it manually:
-
-```
-dictate --ptt
-```
-
-Or install as a background service (starts on login, no terminal needed):
-
-```
-bash install-service.sh
-```
-
-This installs two systemd user services:
-- `dictate.service` — daemon with Whisper model loaded
-- `dictate-ptt.service` — push-to-talk listener
-
-That's it — voice-to-text anywhere on your desktop. Right Ctrl, speak, release, paste.
-
-## Standalone usage
-
-Also works as a standalone push-to-talk tool without the daemon (loads its own model):
-
-```
-dictate
-```
-
-Hold **Right Ctrl** to record, release to transcribe, **Ctrl+V** to paste anywhere.
+- **Two background services** — daemon (model loaded) + push-to-talk (keyboard listener). No terminal needed.
+- **System-wide key detection** via `evdev` — works in any window, any app. Detects keyboard disconnect/reconnect automatically (e.g. KVM switches).
+- **Sound notifications** — bell rings when transcription is done, so you know when to paste.
+- **Pre-loaded Whisper model** — no startup delay per request. The model stays in memory.
+- **1-second rolling pre-buffer** — captures speech from the moment you press the key.
+- **Runs entirely locally** — no internet, no cloud APIs, no data leaves your machine.
 
 ## Options
 
 ```
 dictate --serve              # start daemon (keeps model loaded)
-dictate --ptt                # push-to-talk via daemon (system-wide, with sound notifications)
-dictate --once               # send one request to daemon
+dictate --ptt                # push-to-talk via daemon (system-wide, sound notifications)
+dictate --once               # send one request to daemon, print text
 dictate --stop               # stop daemon
 dictate --stop-recording     # stop current recording immediately
 dictate --key PAUSE          # use a different trigger key
@@ -190,13 +156,15 @@ Hints are sent per-request — no daemon restart needed when switching projects.
 | Hardware | Model | Compute |
 |----------|-------|---------|
 | NVIDIA GPU | medium | int8 (CUDA) |
-| CPU only | small | int8 |
+| CPU only (Intel, AMD) | small | int8 |
+
+No GPU required. The `small` model on CPU is good enough for English dictation. NVIDIA GPU gives you the `medium` model for better accuracy, especially with technical terms and non-English languages.
 
 ## Requirements
 
 - Linux with Wayland (tested on Fedora 43, Ubuntu 22.04)
 - Python 3.10+
-- A microphone (not needed on headless transcription server)
+- A microphone (laptop mic, USB mic, AirPods — anything that shows up as an input device)
 - NVIDIA GPU (optional, falls back to CPU)
 - For Jetson (aarch64): build ctranslate2 from source first — see `build-ctranslate2.sh`
 
@@ -210,4 +178,5 @@ rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
 ## Tested on
 
 - Fedora 43, NVIDIA GTX 1650 (4GB), Keychron K8, AirPods mic
+- Fedora 43, Intel integrated (no GPU), laptop mic + AirPods
 - Jetson Orin Nano (JetPack 6.x, 8GB), network transcription server
