@@ -29,31 +29,28 @@ No GPU required. On NVIDIA GPUs it uses the `medium` model for higher accuracy. 
 
 ## Claude Code integration
 
-### Voice editor (Ctrl+G)
+The system-wide push-to-talk works directly with Claude Code — press Right Ctrl, speak your prompt, release, hear the bell, Ctrl+V into the Claude Code input. No special setup needed.
+
+<details>
+<summary>Optional: voice-enabled editor and /dictate command</summary>
+
+**Voice editor (Ctrl+G)** — for longer prompts you want to review before sending:
 
 ```
 EDITOR=dictate-editor claude
 ```
 
-Press **Ctrl+G** to open a voice-enabled nvim editor:
+Press Ctrl+G to open nvim with voice keybindings (F5 record, F6 stop/transcribe, F7 spell check). Dictate in chunks, edit, then `:wq` to send.
 
-| Key | Action |
-|-----|--------|
-| **F5** | Start recording |
-| **F6** | Stop recording and transcribe |
-| **F7** | Toggle spell checker |
-| `:wq` | Send text to Claude |
-
-Dictate in chunks — edit, spell-check, and refine before sending.
-
-### /dictate command
+**/dictate command** — speak directly into the Claude Code prompt:
 
 ```
 mkdir -p ~/.claude/commands
 cp dictate.claude-command ~/.claude/commands/dictate.md
 ```
 
-Type `/dictate` in Claude Code, speak your prompt, pause when done. Claude receives and responds to your spoken prompt.
+Type `/dictate`, speak, pause when done.
+</details>
 
 ## Network transcription
 
