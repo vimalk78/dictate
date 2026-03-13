@@ -6,7 +6,7 @@ Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local, offl
 
 ### Demo
 
-https://github.com/user-attachments/assets/09645745-e30d-4945-859f-b8932bbda8c4
+https://github.com/user-attachments/assets/1721056f-6b26-47af-86c0-0f936ce5eb9f
 
 ## Quick start
 
