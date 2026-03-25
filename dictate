@@ -169,18 +169,19 @@ def calibrate_mic(audio_dev, retries=5, retry_delay=2):
             raise
 
         ambient = np.mean(calibration_rms) if calibration_rms else 0.0
-        if ambient < 0.001 and attempt < retries - 1:
-            print(f"  Mic returning silence (rms={ambient:.4f}), retrying in {retry_delay}s... ({attempt+1}/{retries})")
+        if (ambient < 0.001 or ambient > 0.03) and attempt < retries - 1:
+            reason = "silence" if ambient < 0.001 else "noisy (device switching?)"
+            print(f"  Mic returning {reason} (rms={ambient:.4f}), retrying in {retry_delay}s... ({attempt+1}/{retries})")
             time.sleep(retry_delay)
             # Re-detect audio device — index may have changed
             audio_dev = find_audio_device()
             continue
 
         threshold = ambient * 1.5 + 0.01
-        if threshold > 0.15:
-            print(f"  WARNING: high ambient noise (rms={ambient:.4f}), capping threshold at 0.15 (was {threshold:.4f})")
-            print(f"  Try a better microphone or move to a quieter environment.")
-            threshold = 0.15
+        if threshold > 0.05:
+            print(f"  WARNING: high ambient noise (rms={ambient:.4f}), capping threshold at 0.05 (was {threshold:.4f})")
+            print(f"  Audio device may have changed during calibration.")
+            threshold = 0.05
         elif ambient < 0.001:
             print(f"  WARNING: very low ambient level (rms={ambient:.4f}), mic may not be picking up audio.")
             print(f"  Check your microphone or try: dictate --list-devices")
@@ -402,12 +403,15 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
 
     # Persistent audio stream with rolling pre-buffer
     from collections import deque
+    import threading
     pre_buffer_secs = config.get("pre_buffer_secs", 1.0)
     pre_buffer_frames = int(pre_buffer_secs * SAMPLE_RATE / 1024) + 1
     pre_buffer = deque(maxlen=pre_buffer_frames)
+    recent_rms = deque(maxlen=16)  # ~1s of RMS samples at 1024-block size
 
     def prebuf_callback(indata, frames, time_info, status):
         pre_buffer.append(indata.copy())
+        recent_rms.append(np.sqrt(np.mean(indata ** 2)))
 
     prebuf_stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -415,6 +419,36 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
     )
     prebuf_stream.start()
     print("Pre-buffer stream started (1s rolling buffer).")
+
+    # Monitor mic health — detect disconnects and re-calibrate on reconnect
+    mic_healthy = True
+    def notify(title, body, icon="dialog-warning"):
+        subprocess.Popen(["notify-send", "-a", "Dictate", "-i", icon, title, body],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def mic_monitor():
+        nonlocal speech_threshold, audio_dev, mic_healthy
+        while True:
+            import time
+            time.sleep(5)
+            if not recent_rms:
+                continue
+            avg_rms = np.mean(list(recent_rms))
+            if avg_rms < 0.0001 and mic_healthy:
+                mic_healthy = False
+                print("WARNING: microphone went silent — disconnected or switched?")
+                notify("Microphone lost", "Dictate: mic returning silence. Reconnect your microphone.", "audio-input-microphone")
+            elif avg_rms >= 0.0001 and not mic_healthy:
+                print("Microphone audio detected again, re-calibrating...")
+                try:
+                    speech_threshold, audio_dev = calibrate_mic(audio_dev, retries=1)
+                    print(f"Mic re-calibrated. speech_threshold={speech_threshold:.4f}")
+                    notify("Microphone reconnected", f"Dictate: mic re-calibrated (threshold={speech_threshold:.4f}).", "audio-input-microphone")
+                except Exception as e:
+                    print(f"Re-calibration failed: {e}")
+                mic_healthy = True
+
+    threading.Thread(target=mic_monitor, daemon=True).start()
 
     Path(SOCK_PATH).parent.mkdir(parents=True, exist_ok=True)
     if os.path.exists(SOCK_PATH):
