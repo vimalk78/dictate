@@ -12,6 +12,8 @@ Dictate is a voice-to-text tool for Claude Code on Linux. It records speech usin
 
 ```bash
 bash install.sh                    # full install (system deps, venv, launcher)
+bash install-service.sh            # install and start systemd services
+bash update.sh                     # update after code changes (no venv rebuild)
 dictate --serve &                  # start daemon (keeps Whisper model in memory)
 dictate --once                     # send one request to daemon, print text
 dictate                            # standalone push-to-talk mode (no daemon)
@@ -23,6 +25,8 @@ dictate --once                          # client unchanged
 ```
 
 After install, reboot or re-login once for `input` group membership (required for evdev access).
+
+After code changes, run `bash update.sh` to deploy — it copies the script, service files, and restarts services. No venv rebuild needed.
 
 ### Testing
 
@@ -76,11 +80,11 @@ Server → Daemon:
 
 ### Audio pipeline
 
-`sounddevice.InputStream` (16kHz mono float32) → RMS-based silence detection → numpy array → `faster-whisper model.transcribe()`. Silence threshold is calibrated from 0.5s ambient measurement on startup: `ambient * 1.5 + 0.01`, capped at 0.15.
+`sounddevice.InputStream` (16kHz mono float32) → RMS-based silence detection → numpy array → `faster-whisper model.transcribe()`. Silence threshold is calibrated from 0.5s ambient measurement on startup: `ambient * 1.5 + 0.01`, capped at 0.05. Calibration retries on silence (rms=0) or suspiciously high ambient (>0.03, e.g. device switching). A background mic monitor thread detects disconnects and re-calibrates on reconnect, sending desktop notifications via `notify-send`.
 
 ### Key functions
 
-- `calibrate_mic()` — ambient RMS measurement, sets speech threshold
+- `calibrate_mic()` — ambient RMS measurement with retry logic, sets speech threshold
 - `record_until_silence()` — records until post-speech silence or timeout, respects STOP_FLAG
 - `transcribe_audio()` — local transcription via faster-whisper model
 - `transcribe_remote()` — forwards audio to TCP server, returns text
@@ -105,7 +109,9 @@ Server → Daemon:
 - **PipeWire preference**: `default` ALSA device doesn't route Bluetooth mic correctly; must use pipewire device by name
 - **`hotwords` removed**: tested but degraded transcription with many terms; `initial_prompt` works better
 - **`hallucination_silence_threshold=2`**: prevents Whisper from hallucinating text on silence
-- **Threshold cap 0.15**: prevents false "no speech" from noisy calibration (e.g., AirPods connecting)
+- **Threshold cap 0.05**: prevents false "no speech" from noisy calibration (e.g., AirPods connecting/disconnecting)
+- **Calibration retry on noise**: ambient RMS > 0.03 triggers retry — catches PipeWire route switching transients
+- **Mic health monitor**: background thread checks pre-buffer RMS every 5s, sends `notify-send` on disconnect, re-calibrates on reconnect
 - **Hints are per-request**: sent in client JSON, no daemon restart when switching projects
 - **Network transcription**: local daemon records and forwards raw audio over TCP; remote server is stateless and handles transcription only. `--once` client is completely unaware of network mode
 
