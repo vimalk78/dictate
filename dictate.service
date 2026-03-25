@@ -1,8 +1,10 @@
 [Unit]
 Description=Dictate voice-to-text daemon
-After=pipewire.service
+After=pipewire.service pipewire-pulse.socket
+Wants=pipewire.service
 
 [Service]
+ExecStartPre=/bin/sleep 3
 ExecStart=%h/.local/bin/dictate --serve
 ExecStop=%h/.local/bin/dictate --stop
 Restart=on-failure

@@ -140,34 +140,58 @@ def list_devices():
             print(f"  {dev.path}: {dev.name}")
 
 
-def calibrate_mic(audio_dev):
-    """Measure ambient noise for 0.5s and return speech threshold."""
-    calibration_rms = []
+def calibrate_mic(audio_dev, retries=5, retry_delay=2):
+    """Measure ambient noise for 0.5s and return speech threshold.
+    Retries if mic returns silence (rms=0), which happens at boot before
+    PipeWire audio routing is fully ready."""
+    import time
 
-    def cal_cb(indata, frames, time_info, status):
-        calibration_rms.append(np.sqrt(np.mean(indata ** 2)))
+    for attempt in range(retries):
+        calibration_rms = []
 
-    stream = sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-        callback=cal_cb, device=audio_dev,
-    )
-    stream.start()
-    sd.sleep(500)
-    stream.stop()
-    stream.close()
+        def cal_cb(indata, frames, time_info, status):
+            calibration_rms.append(np.sqrt(np.mean(indata ** 2)))
 
-    ambient = np.mean(calibration_rms) if calibration_rms else 0.01
-    threshold = ambient * 1.5 + 0.01
-    # Cap threshold — if ambient was noisy during calibration, don't make it impossible to speak
-    if threshold > 0.15:
-        print(f"  WARNING: high ambient noise (rms={ambient:.4f}), capping threshold at 0.15 (was {threshold:.4f})")
-        print(f"  Try a better microphone or move to a quieter environment.")
-        threshold = 0.15
-    elif ambient < 0.001:
-        print(f"  WARNING: very low ambient level (rms={ambient:.4f}), mic may not be picking up audio.")
-        print(f"  Check your microphone or try: dictate --list-devices")
-    print(f"  ambient_rms={ambient:.4f}, threshold={threshold:.4f}")
-    return threshold
+        try:
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                callback=cal_cb, device=audio_dev,
+            )
+            stream.start()
+            sd.sleep(500)
+            stream.stop()
+            stream.close()
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"  Mic not ready ({e}), retrying in {retry_delay}s... ({attempt+1}/{retries})")
+                time.sleep(retry_delay)
+                continue
+            raise
+
+        ambient = np.mean(calibration_rms) if calibration_rms else 0.0
+        if ambient < 0.001 and attempt < retries - 1:
+            print(f"  Mic returning silence (rms={ambient:.4f}), retrying in {retry_delay}s... ({attempt+1}/{retries})")
+            time.sleep(retry_delay)
+            # Re-detect audio device — index may have changed
+            audio_dev = find_audio_device()
+            continue
+
+        threshold = ambient * 1.5 + 0.01
+        if threshold > 0.15:
+            print(f"  WARNING: high ambient noise (rms={ambient:.4f}), capping threshold at 0.15 (was {threshold:.4f})")
+            print(f"  Try a better microphone or move to a quieter environment.")
+            threshold = 0.15
+        elif ambient < 0.001:
+            print(f"  WARNING: very low ambient level (rms={ambient:.4f}), mic may not be picking up audio.")
+            print(f"  Check your microphone or try: dictate --list-devices")
+        print(f"  ambient_rms={ambient:.4f}, threshold={threshold:.4f}")
+        return threshold, audio_dev
+
+    # All retries exhausted with silence — proceed with minimum threshold
+    print(f"  WARNING: mic still silent after {retries} attempts, proceeding with minimum threshold")
+    print(f"  Try unplugging and re-plugging your USB microphone.")
+    print(f"  ambient_rms=0.0000, threshold=0.0100")
+    return 0.01, audio_dev
 
 
 STOP_FLAG = os.path.expanduser("~/.local/share/dictate/stop")
@@ -371,7 +395,7 @@ def serve_tcp(model, listen_addr, language, verbose=False):
 
 def serve(model, language, audio_dev, config, initial_prompt, verbose=False, server_addr=None):
     """Run as a background daemon. Listen on Unix socket for record requests."""
-    speech_threshold = calibrate_mic(audio_dev)
+    speech_threshold, audio_dev = calibrate_mic(audio_dev)
     print(f"Mic calibrated. speech_threshold={speech_threshold:.4f}")
     if initial_prompt:
         print(f"Vocabulary hints loaded.")

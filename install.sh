@@ -81,7 +81,7 @@ if [ "$ARCH" = "aarch64" ]; then
 #!/bin/bash
 VENV="$VENV_DIR"
 export LD_LIBRARY_PATH="/usr/local/cuda/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-exec "\$VENV/bin/python" "$HOME/.local/share/dictate/dictate.py" "\$@"
+exec "\$VENV/bin/python" -u "$HOME/.local/share/dictate/dictate.py" "\$@"
 LAUNCHER
 else
     NVIDIA_LIBS="$VENV_DIR/lib64/python*/site-packages/nvidia/cublas/lib"
@@ -91,7 +91,7 @@ VENV="$VENV_DIR"
 for d in $NVIDIA_LIBS; do
     [ -d "\$d" ] && export LD_LIBRARY_PATH="\$d\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 done
-exec "\$VENV/bin/python" "$HOME/.local/share/dictate/dictate.py" "\$@"
+exec "\$VENV/bin/python" -u "$HOME/.local/share/dictate/dictate.py" "\$@"
 LAUNCHER
 fi
 chmod +x ~/.local/bin/dictate
