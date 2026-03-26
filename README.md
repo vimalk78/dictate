@@ -81,6 +81,7 @@ Audio is sent as raw float32 over TCP (~64KB/s) — trivial on a LAN.
 
 - **Two background services** — daemon (model loaded) + push-to-talk (keyboard listener). No terminal needed.
 - **System-wide key detection** via `evdev` — works in any window, any app. Detects keyboard disconnect/reconnect automatically (e.g. KVM switches).
+- **Mic health monitoring** — detects microphone disconnect/reconnect (e.g. USB re-plug, Bluetooth switch, KVM). Sends desktop notifications and re-calibrates automatically.
 - **Sound notifications** — bell rings when transcription is done, so you know when to paste.
 - **Pre-loaded Whisper model** — no startup delay per request. The model stays in memory.
 - **1-second rolling pre-buffer** — captures speech from the moment you press the key.
