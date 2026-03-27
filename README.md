@@ -118,6 +118,12 @@ wait_secs = 10.0
 server = ""              # "HOST:PORT" for network transcription
 ```
 
+**Switching microphones** — dictate uses PipeWire's default input source. To switch between mics (e.g. webcam mic vs AirPods), change the default input in GNOME Settings → Sound → Input, then restart:
+
+```
+systemctl --user restart dictate.service dictate-ptt.service
+```
+
 ## Vocabulary hints
 
 Whisper can struggle with technical terms — "Claude" becomes "cloud", "Kubernetes" becomes "kubernetes". Hints fix this.
