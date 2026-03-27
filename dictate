@@ -646,37 +646,50 @@ def ptt_client(language, key_code, key_name, device_path):
     print(f"Ctrl+C to quit.\n")
 
     t = None
+    last_reconnect_check = 0
     try:
         while True:
-            for sel_key, _ in selector.select():
+            # If keyboards are missing, periodically try to re-add them
+            if not selector.get_map():
+                now = _time.time()
+                if now - last_reconnect_check >= 2:
+                    last_reconnect_check = now
+                    try:
+                        new_kbds = find_keyboards() if not device_path else [evdev.InputDevice(device_path)]
+                        for kbd in new_kbds:
+                            selector.register(kbd, EVENT_READ)
+                            print(f"Keyboard reconnected: {kbd.name} ({kbd.path})")
+                    except Exception:
+                        pass
+                if not selector.get_map():
+                    _time.sleep(1)
+                    continue
+
+            ready = selector.select(timeout=2)
+            if not ready:
+                # Timeout — check for missing keyboards
+                try:
+                    new_kbds = find_keyboards() if not device_path else [evdev.InputDevice(device_path)]
+                    registered = {sk.fileobj.path for sk in selector.get_map().values()}
+                    for kbd in new_kbds:
+                        if kbd.path not in registered:
+                            selector.register(kbd, EVENT_READ)
+                            print(f"Keyboard reconnected: {kbd.name} ({kbd.path})")
+                except Exception:
+                    pass
+                continue
+
+            for sel_key, _ in ready:
                 dev = sel_key.fileobj
                 try:
                     events = list(dev.read())
                 except OSError:
-                    # This specific keyboard disconnected (e.g. KVM switch)
-                    print(f"\nKeyboard disconnected: {dev.name}", file=sys.stderr)
-                    selector.unregister(dev)
+                    print(f"Keyboard disconnected: {dev.name}")
                     try:
+                        selector.unregister(dev)
                         dev.close()
                     except Exception:
                         pass
-                    # Poll for reconnect in background
-                    print("Waiting for reconnect...", file=sys.stderr)
-                    while True:
-                        _time.sleep(2)
-                        try:
-                            new_kbds = find_keyboards() if not device_path else [evdev.InputDevice(device_path)]
-                            registered = {sk.fileobj.path for sk in selector.get_map().values()}
-                            added = False
-                            for kbd in new_kbds:
-                                if kbd.path not in registered:
-                                    selector.register(kbd, EVENT_READ)
-                                    print(f"Keyboard reconnected: {kbd.name} ({kbd.path})\n")
-                                    added = True
-                            if added:
-                                break
-                        except Exception:
-                            pass
                     continue
 
                 for event in events:
