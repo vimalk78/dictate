@@ -428,25 +428,33 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
 
     def mic_monitor():
         nonlocal speech_threshold, audio_dev, mic_healthy
+        import time
+        silent_count = 0
+        SILENT_THRESHOLD = 6  # require 6 consecutive silent checks (30s) before declaring lost
         while True:
-            import time
             time.sleep(5)
             if not recent_rms:
                 continue
             avg_rms = np.mean(list(recent_rms))
-            if avg_rms < 0.0001 and mic_healthy:
-                mic_healthy = False
-                print("WARNING: microphone went silent — disconnected or switched?")
-                notify("Microphone lost", "Dictate: mic returning silence. Reconnect your microphone.", "audio-input-microphone")
-            elif avg_rms >= 0.0001 and not mic_healthy:
-                print("Microphone audio detected again, re-calibrating...")
-                try:
-                    speech_threshold, audio_dev = calibrate_mic(audio_dev, retries=1)
-                    print(f"Mic re-calibrated. speech_threshold={speech_threshold:.4f}")
-                    notify("Microphone reconnected", f"Dictate: mic re-calibrated (threshold={speech_threshold:.4f}).", "audio-input-microphone")
-                except Exception as e:
-                    print(f"Re-calibration failed: {e}")
-                mic_healthy = True
+            if avg_rms < 0.0001:
+                if mic_healthy:
+                    silent_count += 1
+                    if silent_count >= SILENT_THRESHOLD:
+                        mic_healthy = False
+                        silent_count = 0
+                        print("WARNING: microphone went silent — disconnected or switched?")
+                        notify("Microphone lost", "Dictate: mic returning silence. Reconnect your microphone.", "audio-input-microphone")
+            else:
+                silent_count = 0
+                if not mic_healthy:
+                    print("Microphone audio detected again, re-calibrating...")
+                    try:
+                        speech_threshold, audio_dev = calibrate_mic(audio_dev, retries=1)
+                        print(f"Mic re-calibrated. speech_threshold={speech_threshold:.4f}")
+                        notify("Microphone reconnected", f"Dictate: mic re-calibrated (threshold={speech_threshold:.4f}).", "audio-input-microphone")
+                    except Exception as e:
+                        print(f"Re-calibration failed: {e}")
+                    mic_healthy = True
 
     threading.Thread(target=mic_monitor, daemon=True).start()
 
