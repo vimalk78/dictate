@@ -33,6 +33,7 @@ SAMPLE_RATE = 16000
 CONFIG_PATH = os.path.expanduser("~/.config/dictate/config.toml")
 SOCK_PATH = os.path.expanduser("~/.local/share/dictate/dictate.sock")
 PID_PATH = os.path.expanduser("~/.local/share/dictate/dictate.pid")
+LOG_PATH = os.path.expanduser("~/.local/share/dictate/transcriptions.log")
 
 DEFAULT_CONFIG = {
     "language": "en",
@@ -545,6 +546,10 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                     text = transcribe_audio(model, audio, lang, req_prompt, verbose)
 
                 print(f" done.\n> {text}\n")
+                if text:
+                    from datetime import datetime
+                    with open(LOG_PATH, "a") as lf:
+                        lf.write(f"{datetime.now().isoformat()}\t{text}\n")
                 conn.sendall((json.dumps({"text": text}) + "\n").encode())
             except Exception as e:
                 print(f" error: {e}\n")
