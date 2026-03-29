@@ -1,0 +1,11 @@
+[Unit]
+Description=Dictate TCP transcription server
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/dictate --serve --listen 0.0.0.0:5555
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
