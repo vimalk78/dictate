@@ -264,7 +264,9 @@ def transcribe_audio(model, audio, language, initial_prompt, verbose=False):
     segments, info = model.transcribe(
         audio, language=language,
         initial_prompt=initial_prompt,
-        hallucination_silence_threshold=2,
+        hallucination_silence_threshold=5,
+        no_speech_threshold=0.8,
+        condition_on_previous_text=False,
     )
     seg_list = list(segments)
     text = " ".join(seg.text for seg in seg_list).strip()
