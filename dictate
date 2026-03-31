@@ -266,8 +266,15 @@ def transcribe_audio(model, audio, language, initial_prompt, verbose=False):
         initial_prompt=initial_prompt,
         hallucination_silence_threshold=2,
     )
-    text = " ".join(seg.text for seg in segments).strip()
+    seg_list = list(segments)
+    text = " ".join(seg.text for seg in seg_list).strip()
     t1 = _time.monotonic()
+    audio_duration = len(audio) / SAMPLE_RATE
+    print(f"  [transcribe] audio={audio_duration:.1f}s, segments={len(seg_list)}, time={t1-t0:.2f}s, lang={info.language}(p={info.language_probability:.2f})")
+    for i, seg in enumerate(seg_list):
+        print(f"  [seg {i}] [{seg.start:.1f}s-{seg.end:.1f}s] {seg.text.strip()}")
+    if seg_list and seg_list[-1].end < audio_duration - 1.0:
+        print(f"  WARNING: last segment ends at {seg_list[-1].end:.1f}s but audio is {audio_duration:.1f}s — Whisper may have truncated")
     if verbose:
         print(f"[debug] transcribe took {t1-t0:.2f}s, detected_language={info.language} (p={info.language_probability:.2f})")
     return text
