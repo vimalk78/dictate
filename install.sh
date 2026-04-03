@@ -122,16 +122,26 @@ mkdir -p ~/.claude/commands
 cp "$(dirname "$0")/dictate.claude-command" ~/.claude/commands/dictate.md
 echo "Installed /dictate command for Claude Code."
 
+# Install systemd services (optional, for background daemon + push-to-talk)
+if [ -d /run/systemd/system ] && [ "$ARCH" != "aarch64" ]; then
+    echo ""
+    read -p "Install systemd services for background daemon + push-to-talk? [Y/n] " yn
+    yn="${yn:-y}"
+    if [[ "$yn" =~ ^[Yy] ]]; then
+        mkdir -p ~/.config/systemd/user
+        cp "$(dirname "$0")/dictate.service" ~/.config/systemd/user/dictate.service
+        cp "$(dirname "$0")/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
+        systemctl --user daemon-reload
+        systemctl --user enable --now dictate dictate-ptt
+        echo "Services installed and started."
+    fi
+fi
+
 echo ""
 echo "Done! Run: dictate"
 echo "  Hold Right Ctrl to record, release to transcribe."
 echo "  Ctrl+V to paste the transcribed text."
 echo "  Edit ~/.config/dictate/config.toml to customize."
-echo ""
-echo "Claude Code integration:"
-echo "  1. Start daemon:  dictate --serve"
-echo "  2. Launch Claude:  EDITOR=dictate-editor claude"
-echo "  3. Use /dictate to speak, or Ctrl+G then F5 to dictate in editor"
 echo ""
 if grep -q "^input:.*\b$USER\b" /etc/group && ! id -nG 2>/dev/null | grep -qw input; then
     echo "⚠ IMPORTANT: Log out and back in for input group membership to take effect."
