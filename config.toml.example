@@ -4,6 +4,10 @@
 # Language for transcription (Whisper language code)
 language = "en"
 
+# Languages to cycle through with: dictate --lang
+# Bind to a keyboard shortcut for quick switching
+languages = ["en", "hi"]
+
 # Push-to-talk trigger key (without KEY_ prefix)
 # Examples: RIGHTCTRL, PAUSE, INSERT, F9
 key = "RIGHTCTRL"

@@ -34,6 +34,7 @@ CONFIG_PATH = os.path.expanduser("~/.config/dictate/config.toml")
 SOCK_PATH = os.path.expanduser("~/.local/share/dictate/dictate.sock")
 PID_PATH = os.path.expanduser("~/.local/share/dictate/dictate.pid")
 LOG_PATH = os.path.expanduser("~/.local/share/dictate/transcriptions.log")
+LANG_PATH = os.path.expanduser("~/.local/share/dictate/language")
 
 DEFAULT_CONFIG = {
     "language": "en",
@@ -53,6 +54,29 @@ def load_config():
             user = tomllib.load(f)
         config.update(user)
     return config
+
+
+def get_language(config):
+    """Read language from state file, falling back to config."""
+    if os.path.exists(LANG_PATH):
+        lang = open(LANG_PATH).read().strip()
+        if lang:
+            return lang
+    return config.get("language", "en")
+
+
+def set_language(lang):
+    """Write language to state file and show notification."""
+    Path(LANG_PATH).parent.mkdir(parents=True, exist_ok=True)
+    with open(LANG_PATH, "w") as f:
+        f.write(lang)
+    names = {"en": "English", "hi": "Hindi", "ja": "Japanese", "de": "German",
+             "fr": "French", "es": "Spanish", "zh": "Chinese", "ko": "Korean"}
+    name = names.get(lang, lang)
+    subprocess.Popen(["notify-send", "-i", "audio-input-microphone", "-t", "2000",
+                      "Dictate", f"Language: {name} ({lang})"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"Language set to {name} ({lang})")
 
 
 GLOBAL_HINTS_DIR = os.path.expanduser("~/.config/dictate/hints.d")
@@ -264,9 +288,7 @@ def transcribe_audio(model, audio, language, initial_prompt, verbose=False):
     segments, info = model.transcribe(
         audio, language=language,
         initial_prompt=initial_prompt,
-        hallucination_silence_threshold=5,
-        no_speech_threshold=0.8,
-        condition_on_previous_text=False,
+        hallucination_silence_threshold=2,
     )
     seg_list = list(segments)
     text = " ".join(seg.text for seg in seg_list).strip()
@@ -729,7 +751,8 @@ def ptt_client(language, key_code, key_name, device_path):
                         result = {}
                         def do_once():
                             try:
-                                result["text"] = client_once(language, status_callback=lambda s: None)
+                                lang = get_language(load_config())
+                                result["text"] = client_once(lang, status_callback=lambda s: None)
                             except Exception as e:
                                 result["error"] = str(e)
                         t = threading.Thread(target=do_once, daemon=True)
@@ -836,8 +859,8 @@ def main():
     parser = argparse.ArgumentParser(description="Push-to-talk dictation")
     parser.add_argument("--key", default=config.get("key", "RIGHTCTRL"),
         help="Trigger key (default: from config)")
-    parser.add_argument("--model", default=hw_model,
-        help=f"Whisper model (default: {hw_model})")
+    parser.add_argument("--model", default=config.get("model", hw_model),
+        help=f"Whisper model (default: {config.get('model', hw_model)})")
     parser.add_argument("--device", help="Input device path")
     parser.add_argument("--list-devices", action="store_true")
     parser.add_argument("--language", default=config.get("language", "en"),
@@ -857,6 +880,8 @@ def main():
         help="TCP listen address for remote transcription server (HOST:PORT)")
     parser.add_argument("--server",
         help="Forward audio to remote transcription server (HOST:PORT)")
+    parser.add_argument("--lang", nargs="?", const="toggle", default=None,
+        help="Set transcription language (e.g. --lang hi). No value toggles en↔hi.")
     parser.add_argument("--verbose", "-v", action="store_true",
         help="Enable debug logging")
     args = parser.parse_args()
@@ -865,9 +890,25 @@ def main():
         list_devices()
         return
 
+    # --lang: set or toggle language
+    if args.lang is not None:
+        if args.lang == "toggle":
+            cur = get_language(config)
+            langs = config.get("languages", ["en", "hi"])
+            try:
+                idx = langs.index(cur)
+                new_lang = langs[(idx + 1) % len(langs)]
+            except ValueError:
+                new_lang = langs[0]
+        else:
+            new_lang = args.lang
+        set_language(new_lang)
+        return
+
     # --once: just talk to daemon
     if args.once:
-        client_once(args.language)
+        lang = get_language(config) if args.language == config.get("language", "en") else args.language
+        client_once(lang)
         return
 
     # --ptt: push-to-talk via daemon
