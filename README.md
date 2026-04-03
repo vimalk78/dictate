@@ -117,7 +117,7 @@ Or add it manually in **GNOME Settings → Keyboard → Custom Shortcuts**.
 dictate --serve              # start daemon (keeps model loaded)
 dictate --ptt                # push-to-talk via daemon (system-wide, sound notifications)
 dictate --once               # send one request to daemon, print text
-dictate --lang [CODE]        # set or toggle transcription language
+dictate --lang [CODE]        # set or toggle language (cycles through `languages` in config.toml)
 dictate --stop               # stop daemon
 dictate --stop-recording     # stop current recording immediately
 dictate --key PAUSE          # use a different trigger key
