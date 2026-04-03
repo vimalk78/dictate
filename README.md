@@ -14,7 +14,6 @@ https://github.com/user-attachments/assets/1721056f-6b26-47af-86c0-0f936ce5eb9f
 git clone https://github.com/vimalk78/dictate.git
 cd dictate
 bash install.sh
-bash install-service.sh
 ```
 
 Reboot or re-login once (for `input` group membership). That's it.
@@ -66,7 +65,6 @@ On your laptop:
 
 ```
 dictate --serve --server GPU_IP:5555
-bash install-service.sh
 ```
 
 Or set the server permanently in `~/.config/dictate/config.toml`:
@@ -87,12 +85,39 @@ Audio is sent as raw float32 over TCP (~64KB/s) — trivial on a LAN.
 - **1-second rolling pre-buffer** — captures speech from the moment you press the key.
 - **Runs entirely locally** — no internet, no cloud APIs, no data leaves your machine.
 
+## Language switching
+
+Switch transcription language on the fly — no restart needed.
+
+```
+dictate --lang hi            # set language to Hindi
+dictate --lang en            # set language to English
+dictate --lang               # toggle through configured languages
+```
+
+The toggle cycles through `languages` in your config (default: `["en", "hi"]`). A desktop notification shows the current language.
+
+**Note:** multilingual transcription requires a model that supports the languages you want. The `large-v3` model works well across languages. Smaller models like `small` are decent for English but weaker for Hindi and other languages.
+
+**Keyboard shortcut (recommended):** bind `dictate --lang` to a key combo for instant switching:
+
+```
+# GNOME example: Super+F9
+gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ name 'Dictate Toggle Language'
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ command 'dictate --lang'
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ binding '<Super>F9'
+```
+
+Or add it manually in **GNOME Settings → Keyboard → Custom Shortcuts**.
+
 ## Options
 
 ```
 dictate --serve              # start daemon (keeps model loaded)
 dictate --ptt                # push-to-talk via daemon (system-wide, sound notifications)
 dictate --once               # send one request to daemon, print text
+dictate --lang [CODE]        # set or toggle transcription language
 dictate --stop               # stop daemon
 dictate --stop-recording     # stop current recording immediately
 dictate --key PAUSE          # use a different trigger key
@@ -110,12 +135,14 @@ dictate --serve --server IP:5555       # daemon forwarding to remote GPU
 Edit `~/.config/dictate/config.toml`:
 
 ```toml
-language = "en"
+language = "en"                # default transcription language
+languages = ["en", "hi"]       # languages to cycle with: dictate --lang
+model = "large-v3"             # Whisper model (auto-detected if not set)
 key = "RIGHTCTRL"
 pre_buffer_secs = 1.0
 silence_secs = 3.0
 wait_secs = 10.0
-server = ""              # "HOST:PORT" for network transcription
+server = ""                    # "HOST:PORT" for network transcription
 ```
 
 **Switching microphones** — dictate uses PipeWire's default input source. To switch between mics (e.g. webcam mic vs AirPods), change the default input in GNOME Settings → Sound → Input, then restart:
@@ -157,12 +184,12 @@ Hints are sent per-request — no daemon restart needed when switching projects.
 
 ## Hardware auto-detection
 
-| Hardware | Model | Compute |
-|----------|-------|---------|
-| NVIDIA GPU | medium | int8 (CUDA) |
-| CPU only (Intel, AMD) | small | int8 |
+| Hardware | Default model | Compute | Recommended override |
+|----------|---------------|---------|---------------------|
+| NVIDIA GPU (4GB+) | medium | int8 (CUDA) | `large-v3` or `large-v3-turbo` |
+| CPU only (Intel, AMD) | small | int8 | — |
 
-No GPU required. The `small` model on CPU is good enough for English dictation. NVIDIA GPU gives you the `medium` model for better accuracy, especially with technical terms and non-English languages.
+No GPU required. The `small` model on CPU is good enough for English dictation. NVIDIA GPU gives you the `medium` model for better accuracy. Set `model = "large-v3"` in config for the best quality if your GPU has enough VRAM.
 
 ## Requirements
 
@@ -175,8 +202,10 @@ No GPU required. The `small` model on CPU is good enough for English dictation. 
 ## Uninstall
 
 ```
-bash uninstall-service.sh    # remove systemd services (if installed)
+systemctl --user disable --now dictate dictate-ptt
 rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
+rm -rf ~/.config/systemd/user/dictate.service ~/.config/systemd/user/dictate-ptt.service
+rm -rf ~/.config/dictate
 ```
 
 ## Tested on
