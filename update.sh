@@ -23,11 +23,8 @@ fi
 
 # Update service files and restart if services are active
 if [ -d ~/.config/systemd/user ]; then
-    for svc in dictate.service dictate-ptt.service; do
-        if [ -f "$SCRIPT_DIR/$svc" ]; then
-            cmp -s "$SCRIPT_DIR/$svc" ~/.config/systemd/user/"$svc" || cp "$SCRIPT_DIR/$svc" ~/.config/systemd/user/"$svc"
-        fi
-    done
+    cp "$SCRIPT_DIR/dictate.service" ~/.config/systemd/user/dictate.service
+    cp "$SCRIPT_DIR/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
     systemctl --user daemon-reload
 
     if systemctl --user is-active --quiet dictate.service; then
