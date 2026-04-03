@@ -23,8 +23,11 @@ fi
 
 # Update service files and restart if services are active
 if [ -d ~/.config/systemd/user ]; then
-    cp "$SCRIPT_DIR/dictate.service" ~/.config/systemd/user/dictate.service
-    cp "$SCRIPT_DIR/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
+    for svc in dictate.service dictate-ptt.service; do
+        if [ -f "$SCRIPT_DIR/$svc" ]; then
+            cmp -s "$SCRIPT_DIR/$svc" ~/.config/systemd/user/"$svc" || cp "$SCRIPT_DIR/$svc" ~/.config/systemd/user/"$svc"
+        fi
+    done
     systemctl --user daemon-reload
 
     if systemctl --user is-active --quiet dictate.service; then
@@ -33,9 +36,13 @@ if [ -d ~/.config/systemd/user ]; then
     fi
 fi
 
-# Update hints
+# Update hints (don't overwrite user-edited files)
 mkdir -p ~/.config/dictate/hints.d
-cp "$SCRIPT_DIR"/hints.d/* ~/.config/dictate/hints.d/ 2>/dev/null || true
+for f in "$SCRIPT_DIR"/hints.d/*; do
+    [ -f "$f" ] || continue
+    dst=~/.config/dictate/hints.d/"$(basename "$f")"
+    [ -f "$dst" ] || cp "$f" "$dst"
+done
 
 # Update Claude Code command
 if [ -d ~/.claude/commands ]; then

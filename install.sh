@@ -108,9 +108,13 @@ if [ ! -f ~/.config/dictate/config.toml ]; then
     echo "Created config at ~/.config/dictate/config.toml"
 fi
 
-# Install global hints
+# Install global hints (don't overwrite existing)
 mkdir -p ~/.config/dictate/hints.d
-cp "$(dirname "$0")"/hints.d/* ~/.config/dictate/hints.d/ 2>/dev/null || true
+for f in "$(dirname "$0")"/hints.d/*; do
+    [ -f "$f" ] || continue
+    dst=~/.config/dictate/hints.d/"$(basename "$f")"
+    [ -f "$dst" ] || cp "$f" "$dst"
+done
 echo "Installed global hints to ~/.config/dictate/hints.d/"
 
 # Install Claude Code integration
