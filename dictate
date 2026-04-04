@@ -282,7 +282,7 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
 # ── Transcription ────────────────────────────────────────────────
 
 def transcribe_audio(model, audio, language, initial_prompt, verbose=False):
-    """Transcribe a float32 numpy audio array. Returns text string."""
+    """Transcribe a float32 numpy audio array. Returns (text, metrics) tuple."""
     import time as _time
     t0 = _time.monotonic()
     segments, info = model.transcribe(
@@ -294,14 +294,24 @@ def transcribe_audio(model, audio, language, initial_prompt, verbose=False):
     text = " ".join(seg.text for seg in seg_list).strip()
     t1 = _time.monotonic()
     audio_duration = len(audio) / SAMPLE_RATE
+    metrics = {
+        "audio_duration": audio_duration,
+        "seg_count": len(seg_list),
+        "coverage": seg_list[-1].end / audio_duration if seg_list and audio_duration > 0 else 0,
+        "avg_logprob": np.mean([s.avg_logprob for s in seg_list]) if seg_list else 0,
+        "no_speech_prob": np.mean([s.no_speech_prob for s in seg_list]) if seg_list else 0,
+        "compression_ratio": np.mean([s.compression_ratio for s in seg_list]) if seg_list else 0,
+        "transcribe_time": t1 - t0,
+    }
     print(f"  [transcribe] audio={audio_duration:.1f}s, segments={len(seg_list)}, time={t1-t0:.2f}s, lang={info.language}(p={info.language_probability:.2f})")
+    print(f"  [metrics] cov={metrics['coverage']:.2f}, logp={metrics['avg_logprob']:.2f}, nsp={metrics['no_speech_prob']:.2f}, cr={metrics['compression_ratio']:.2f}")
     for i, seg in enumerate(seg_list):
         print(f"  [seg {i}] [{seg.start:.1f}s-{seg.end:.1f}s] {seg.text.strip()}")
     if seg_list and seg_list[-1].end < audio_duration - 1.0:
         print(f"  WARNING: last segment ends at {seg_list[-1].end:.1f}s but audio is {audio_duration:.1f}s — Whisper may have truncated")
     if verbose:
         print(f"[debug] transcribe took {t1-t0:.2f}s, detected_language={info.language} (p={info.language_probability:.2f})")
-    return text
+    return text, metrics
 
 
 def transcribe_remote(server_addr, audio, language, initial_prompt):
@@ -407,7 +417,7 @@ def serve_tcp(model, listen_addr, language, verbose=False):
                 if verbose:
                     print(f"\n  [debug] language={lang}, initial_prompt={'[' + str(len(initial_prompt)) + ' chars]' if initial_prompt else 'None'}")
 
-                text = transcribe_audio(model, audio, lang, initial_prompt, verbose)
+                text, metrics = transcribe_audio(model, audio, lang, initial_prompt, verbose)
                 print(f" done.\n  > {text}\n")
 
                 resp = json.dumps({"text": text}) + "\n"
@@ -426,7 +436,7 @@ def serve_tcp(model, listen_addr, language, verbose=False):
 
 # ── Daemon (--serve) ──────────────────────────────────────────────
 
-def serve(model, language, audio_dev, config, initial_prompt, verbose=False, server_addr=None):
+def serve(model, language, audio_dev, config, initial_prompt, verbose=False, server_addr=None, model_name=None, model_device=None, model_compute=None):
     """Run as a background daemon. Listen on Unix socket for record requests."""
     speech_threshold, audio_dev = calibrate_mic(audio_dev)
     print(f"Mic calibrated. speech_threshold={speech_threshold:.4f}")
@@ -513,6 +523,18 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
 
+    def on_resume(signum, frame):
+        from datetime import datetime
+        ts = datetime.now().isoformat()
+        print(f"\nSUSPEND/RESUME DETECTED (SIGUSR1) at {ts}")
+        with open(LOG_PATH, "a") as lf:
+            lf.write(f"\n--- SUSPEND/RESUME  {ts} ---\n")
+    signal.signal(signal.SIGUSR1, on_resume)
+
+    from datetime import datetime
+    startup_ts = datetime.now().isoformat()
+    with open(LOG_PATH, "a") as lf:
+        lf.write(f"\n--- DAEMON STARTED  PID={os.getpid()}  {startup_ts} ---\n")
     print(f"Daemon ready. PID={os.getpid()}, socket={SOCK_PATH}")
     print("Waiting for requests...\n")
 
@@ -528,6 +550,25 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                     chunks.append(chunk)
                 data = b"".join(chunks).decode().strip()
                 req = json.loads(data) if data else {}
+
+                # Handle reload-model command
+                if req.get("command") == "reload_model":
+                    if model is not None and model_name:
+                        import time as _time
+                        print("Recreating model from scratch...")
+                        t0 = _time.monotonic()
+                        del model
+                        model = WhisperModel(model_name, device=model_device, compute_type=model_compute)
+                        elapsed = _time.monotonic() - t0
+                        from datetime import datetime
+                        with open(LOG_PATH, "a") as lf:
+                            lf.write(f"\n--- MODEL RECREATED  PID={os.getpid()}  {elapsed:.1f}s  {datetime.now().isoformat()} ---\n")
+                        print(f"Model recreated in {elapsed:.1f}s.")
+                        conn.sendall(f"Model recreated in {elapsed:.1f}s.\n".encode())
+                    else:
+                        conn.sendall(b"No local model (forwarding mode).\n")
+                    continue
+
                 silence = req.get("silence_secs", config.get("silence_secs", 3))
                 wait = req.get("wait_secs", config.get("wait_secs", 10))
 
@@ -573,14 +614,20 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
 
                 if server_addr:
                     text = transcribe_remote(server_addr, audio, lang, req_prompt)
+                    metrics = None
                 else:
-                    text = transcribe_audio(model, audio, lang, req_prompt, verbose)
+                    text, metrics = transcribe_audio(model, audio, lang, req_prompt, verbose)
 
                 print(f" done.\n> {text}\n")
                 if text:
                     from datetime import datetime
-                    with open(LOG_PATH, "a") as lf:
-                        lf.write(f"{datetime.now().isoformat()}\t{text}\n")
+                    ts = datetime.now().isoformat()
+                    if metrics:
+                        with open(LOG_PATH, "a") as lf:
+                            lf.write(f"{ts}\tcov={metrics['coverage']:.2f}\tlogp={metrics['avg_logprob']:.2f}\tnsp={metrics['no_speech_prob']:.2f}\t{text}\n")
+                    else:
+                        with open(LOG_PATH, "a") as lf:
+                            lf.write(f"{ts}\t{text}\n")
                 conn.sendall((json.dumps({"text": text}) + "\n").encode())
             except Exception as e:
                 print(f" error: {e}\n")
@@ -831,12 +878,7 @@ def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, init
                         duration = len(audio) / SAMPLE_RATE
                         print(f" [{duration:.1f}s] transcribing...", end="", flush=True)
 
-                        segments, _ = model.transcribe(
-                            audio, language=language,
-                            initial_prompt=initial_prompt,
-                            hallucination_silence_threshold=2,
-                        )
-                        text = " ".join(seg.text for seg in segments).strip()
+                        text, metrics = transcribe_audio(model, audio, language, initial_prompt)
 
                         if text:
                             subprocess.Popen(["wl-copy", text],
@@ -874,6 +916,8 @@ def main():
         help="Push-to-talk using daemon (no model loading, copies to clipboard)")
     parser.add_argument("--stop", action="store_true",
         help="Stop the running daemon")
+    parser.add_argument("--reload-model", action="store_true",
+        help="Tell daemon to recreate the Whisper model (clears all CTranslate2 state)")
     parser.add_argument("--stop-recording", action="store_true",
         help="Signal the daemon to stop current recording immediately")
     parser.add_argument("--listen",
@@ -942,6 +986,20 @@ def main():
             print("No daemon running.")
         return
 
+    # --reload-model: tell daemon to recreate the model
+    if args.reload_model:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(SOCK_PATH)
+            sock.sendall(json.dumps({"command": "reload_model"}).encode())
+            sock.shutdown(socket.SHUT_WR)
+            resp = sock.recv(4096).decode().strip()
+            print(resp)
+            sock.close()
+        except ConnectionRefusedError:
+            print("No daemon running.")
+        return
+
     # Hardware setup
     if args.cpu:
         device, compute = "cpu", "int8"
@@ -973,7 +1031,8 @@ def main():
         else:
             print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
             model = WhisperModel(args.model, device=device, compute_type=compute)
-        serve(model, args.language, audio_dev, config, initial_prompt, args.verbose, server_addr)
+        serve(model, args.language, audio_dev, config, initial_prompt, args.verbose, server_addr,
+              model_name=args.model, model_device=device, model_compute=compute)
         return
 
     # Default: push-to-talk (always local)
