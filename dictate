@@ -237,11 +237,16 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
     speech_detected = False
     last_speech_time = _time.monotonic()
     start_time = _time.monotonic()
+    max_rms = [0.0]
+    callback_count = [0]
 
     def audio_cb(indata, frames, time_info, status):
         nonlocal speech_detected, last_speech_time, is_recording
         audio_buffer.append(indata.copy())
         rms = np.sqrt(np.mean(indata ** 2))
+        callback_count[0] += 1
+        if rms > max_rms[0]:
+            max_rms[0] = rms
         now = _time.monotonic()
         if rms > speech_threshold:
             speech_detected = True
@@ -273,7 +278,9 @@ def record_until_silence(audio_dev, speech_threshold, silence_secs=3, wait_secs=
         stream.stop()
         stream.close()
 
+    elapsed = _time.monotonic() - start_time
     if not audio_buffer or not speech_detected:
+        print(f" [no-speech] elapsed={elapsed:.1f}s, callbacks={callback_count[0]}, max_rms={max_rms[0]:.4f}, threshold={speech_threshold:.4f}")
         return None
 
     return np.concatenate(audio_buffer, axis=0).flatten()
@@ -450,10 +457,39 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
     pre_buffer_frames = int(pre_buffer_secs * SAMPLE_RATE / 1024) + 1
     pre_buffer = deque(maxlen=pre_buffer_frames)
     recent_rms = deque(maxlen=16)  # ~1s of RMS samples at 1024-block size
+    # Recording state — when active, prebuf_callback accumulates audio
+    rec_buffer = []
+    rec_active = [False]
+    rec_speech_detected = [False]
+    rec_last_speech = [0.0]
+    rec_start = [0.0]
+    rec_max_rms = [0.0]
+    rec_callbacks = [0]
+    rec_silence_secs = [3.0]
+    rec_wait_secs = [10.0]
 
     def prebuf_callback(indata, frames, time_info, status):
+        import time as _time
         pre_buffer.append(indata.copy())
-        recent_rms.append(np.sqrt(np.mean(indata ** 2)))
+        rms = np.sqrt(np.mean(indata ** 2))
+        recent_rms.append(rms)
+        if rec_active[0]:
+            rec_buffer.append(indata.copy())
+            rec_callbacks[0] += 1
+            if rms > rec_max_rms[0]:
+                rec_max_rms[0] = rms
+            now = _time.monotonic()
+            if rms > speech_threshold:
+                rec_speech_detected[0] = True
+                rec_last_speech[0] = now
+            elif rec_speech_detected[0]:
+                if now - rec_last_speech[0] >= rec_silence_secs[0]:
+                    print(f"\n  [rec-stop] silence timeout ({rec_silence_secs[0]}s after last speech)", flush=True)
+                    rec_active[0] = False
+            else:
+                if now - rec_start[0] >= rec_wait_secs[0]:
+                    print(f"\n  [rec-stop] wait timeout ({rec_wait_secs[0]}s, no speech detected)", flush=True)
+                    rec_active[0] = False
 
     prebuf_stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -578,7 +614,8 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                 def send_status(status):
                     conn.sendall((json.dumps({"status": status}) + "\n").encode())
 
-                # Grab pre-buffer snapshot before recording starts
+                # Grab pre-buffer snapshot and start recording via prebuf_callback
+                import time as _time
                 pre_audio = list(pre_buffer)
                 if verbose:
                     pre_dur = sum(len(c) for c in pre_audio) / SAMPLE_RATE if pre_audio else 0
@@ -586,18 +623,47 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
 
                 send_status("recording")
                 print("● Recording...", end="", flush=True)
-                audio = record_until_silence(audio_dev, speech_threshold,
-                                             silence_secs=silence, wait_secs=wait)
 
-                # Prepend pre-buffer to captured audio
-                if audio is not None and pre_audio:
-                    pre = np.concatenate(pre_audio, axis=0).flatten()
-                    audio = np.concatenate([pre, audio])
+                # Clear stale stop flag from previous recording
+                if os.path.exists(STOP_FLAG):
+                    os.unlink(STOP_FLAG)
 
-                if audio is None:
+                # Start recording using the existing prebuf_stream (no second stream)
+                rec_buffer.clear()
+                rec_speech_detected[0] = False
+                rec_last_speech[0] = _time.monotonic()
+                rec_start[0] = _time.monotonic()
+                rec_max_rms[0] = 0.0
+                rec_callbacks[0] = 0
+                rec_silence_secs[0] = silence
+                rec_wait_secs[0] = wait
+                rec_active[0] = True
+
+                # Wait for recording to finish (silence detected, timeout, or STOP_FLAG)
+                while rec_active[0]:
+                    sd.sleep(100)
+                    if os.path.exists(STOP_FLAG):
+                        os.unlink(STOP_FLAG)
+                        print(f"\n  [rec-stop] STOP_FLAG (key released)", flush=True)
+                        rec_speech_detected[0] = True
+                        rec_active[0] = False
+
+                elapsed = _time.monotonic() - rec_start[0]
+                print(f" [rec] elapsed={elapsed:.1f}s, callbacks={rec_callbacks[0]}, max_rms={rec_max_rms[0]:.4f}", end="", flush=True)
+                if not rec_buffer or not rec_speech_detected[0]:
+                    print(f" [no-speech] elapsed={elapsed:.1f}s, callbacks={rec_callbacks[0]}, max_rms={rec_max_rms[0]:.4f}, threshold={speech_threshold:.4f}")
                     print(" (no speech)\n")
+                    from datetime import datetime
+                    with open(LOG_PATH, "a") as lf:
+                        lf.write(f"{datetime.now().isoformat()}\t(no speech detected, elapsed={elapsed:.1f}s, max_rms={rec_max_rms[0]:.4f}, threshold={speech_threshold:.4f})\n")
                     conn.sendall((json.dumps({"text": ""}) + "\n").encode())
                     continue
+
+                # Prepend pre-buffer to recorded audio
+                audio = np.concatenate(rec_buffer, axis=0).flatten()
+                if pre_audio:
+                    pre = np.concatenate(pre_audio, axis=0).flatten()
+                    audio = np.concatenate([pre, audio])
 
                 duration = len(audio) / SAMPLE_RATE
                 rms = np.sqrt(np.mean(audio ** 2))
@@ -619,18 +685,24 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                     text, metrics = transcribe_audio(model, audio, lang, req_prompt, verbose)
 
                 print(f" done.\n> {text}\n")
+                from datetime import datetime
+                ts = datetime.now().isoformat()
                 if text:
-                    from datetime import datetime
-                    ts = datetime.now().isoformat()
                     if metrics:
                         with open(LOG_PATH, "a") as lf:
                             lf.write(f"{ts}\tcov={metrics['coverage']:.2f}\tlogp={metrics['avg_logprob']:.2f}\tnsp={metrics['no_speech_prob']:.2f}\t{text}\n")
                     else:
                         with open(LOG_PATH, "a") as lf:
                             lf.write(f"{ts}\t{text}\n")
+                else:
+                    with open(LOG_PATH, "a") as lf:
+                        lf.write(f"{ts}\t(empty transcription, audio={duration:.1f}s, rms={rms:.4f})\n")
                 conn.sendall((json.dumps({"text": text}) + "\n").encode())
             except Exception as e:
                 print(f" error: {e}\n")
+                from datetime import datetime
+                with open(LOG_PATH, "a") as lf:
+                    lf.write(f"{datetime.now().isoformat()}\t(error: {e})\n")
                 try:
                     conn.sendall(json.dumps({"error": str(e)}).encode())
                 except Exception:
@@ -643,9 +715,10 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
 
 # ── Client (--once) ───────────────────────────────────────────────
 
-def client_once(language, status_callback=None):
+def client_once(language, status_callback=None, wait_secs=None, silence_secs=None):
     """Send a record request to the daemon and print the result.
-    status_callback(status_str) is called for each status update."""
+    status_callback(status_str) is called for each status update.
+    wait_secs/silence_secs override daemon's default timeouts."""
     if not os.path.exists(SOCK_PATH):
         print("Daemon not running. Start it with: dictate --serve", file=sys.stderr)
         sys.exit(1)
@@ -656,6 +729,10 @@ def client_once(language, status_callback=None):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(SOCK_PATH)
     req = {"language": language}
+    if wait_secs is not None:
+        req["wait_secs"] = wait_secs
+    if silence_secs is not None:
+        req["silence_secs"] = silence_secs
     if initial_prompt:
         req["initial_prompt"] = initial_prompt
     sock.sendall(json.dumps(req).encode())
@@ -794,31 +871,37 @@ def ptt_client(language, key_code, key_name, device_path):
                         if not os.path.exists(SOCK_PATH):
                             print("Daemon not running. Start with: dictate --serve", file=sys.stderr)
                             continue
-                        print("● Recording...", end="", flush=True)
+                        from datetime import datetime
+                        key_down_time = _time.monotonic()
+                        key_down_ts = datetime.now().isoformat(timespec='milliseconds')
+                        print(f"● Recording... [press={key_down_ts}]", end="", flush=True)
                         result = {}
                         def do_once():
                             try:
                                 lang = get_language(load_config())
-                                result["text"] = client_once(lang, status_callback=lambda s: None)
+                                result["text"] = client_once(lang, status_callback=lambda s: None, wait_secs=300, silence_secs=300)
                             except Exception as e:
                                 result["error"] = str(e)
                         t = threading.Thread(target=do_once, daemon=True)
                         t.start()
 
                     elif key_event.keystate == evdev.KeyEvent.key_up and t is not None:
+                        held_secs = _time.monotonic() - key_down_time
+                        key_up_ts = datetime.now().isoformat(timespec='milliseconds')
+                        print(f" [release={key_up_ts}]", end="", flush=True)
                         Path(STOP_FLAG).parent.mkdir(parents=True, exist_ok=True)
                         Path(STOP_FLAG).touch()
                         t.join()
                         t = None
                         if "error" in result:
-                            print(f" error: {result['error']}\n", file=sys.stderr)
+                            print(f" [held={held_secs:.1f}s] error: {result['error']}\n", file=sys.stderr)
                             play_sound(SOUND_BELL)
                         elif result.get("text"):
                             clipboard_copy(result["text"])
-                            print(f" done. [copied]\n> {result['text']}\n")
+                            print(f"[held={held_secs:.1f}s] done. [copied]\n> {result['text']}\n")
                             play_sound(SOUND_COMPLETE)
                         else:
-                            print(" (no speech detected)\n")
+                            print(f" [held={held_secs:.1f}s] (no speech detected)\n")
                             play_sound(SOUND_BELL)
 
     except KeyboardInterrupt:
