@@ -134,6 +134,12 @@ if [ -d /run/systemd/system ] && [ "$ARCH" != "aarch64" ]; then
         systemctl --user daemon-reload
         systemctl --user enable --now dictate dictate-ptt
         echo "Services installed and started."
+        # Install suspend/resume hook (signals daemon on wake)
+        if [ ! -f /usr/lib/systemd/system-sleep/dictate-resume ]; then
+            sudo cp "$(dirname "$0")/dictate-resume" /usr/lib/systemd/system-sleep/dictate-resume
+            sudo chmod +x /usr/lib/systemd/system-sleep/dictate-resume
+            echo "Installed suspend/resume hook."
+        fi
     fi
 fi
 

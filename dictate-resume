@@ -1,0 +1,11 @@
+#!/bin/bash
+# systemd sleep hook — sends SIGUSR1 to dictate daemon on resume
+# Install: sudo cp dictate-resume /usr/lib/systemd/system-sleep/ && sudo chmod +x /usr/lib/systemd/system-sleep/dictate-resume
+case $1 in
+    post)
+        # Find all running dictate daemons and signal them
+        for pid_file in /home/*/.local/share/dictate/dictate.pid; do
+            [ -f "$pid_file" ] && kill -USR1 "$(cat "$pid_file")" 2>/dev/null
+        done
+        ;;
+esac
