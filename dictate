@@ -581,6 +581,12 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
     try:
         while True:
             conn, _ = server.accept()
+            # Snapshot wall-clock IMMEDIATELY on accept — used to distinguish
+            # stale STOP_FLAGs from legitimate ones.  Must be recorded before
+            # any request processing, because PTT may create STOP_FLAG (key
+            # release) while we're still reading the request.
+            import time as _walltime
+            conn_accept_wall = _walltime.time()
             try:
                 chunks = []
                 while True:
@@ -628,10 +634,10 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                 send_status("recording")
                 print("● Recording...", end="", flush=True)
 
-                # Record wall-clock time BEFORE starting — used to distinguish
-                # stale STOP_FLAGs from legitimate ones (mtime comparison).
-                import time as _walltime
-                rec_start_wall = _walltime.time()
+                # Use the wall-clock snapshot taken at accept() time —
+                # before request processing, so key-release during recv/parse
+                # still produces flag_mtime >= rec_start_wall.
+                rec_start_wall = conn_accept_wall
 
                 # Start recording using the existing prebuf_stream (no second stream)
                 rec_buffer.clear()

@@ -239,3 +239,24 @@ mic monitoring were independent state machines with no interaction.
 
 **Fix**: mic_monitor now sets `rec_active[0] = False` when declaring
 mic-lost during an active recording, aborting it immediately.
+
+---
+
+### 22. rec_start_wall recorded too late — mtime check defeated
+**Date**: 2026-04-08 &ensp; **Commit**: *(pending)*
+
+Found by TLA+ model checker (TLC). The mtime fix for bug #19 recorded
+`rec_start_wall` after reading the request, parsing JSON, sending status,
+etc. (~50 lines of processing after `accept()`). If the user released the
+key during this window, the STOP_FLAG mtime was earlier than
+`rec_start_wall`, so the daemon incorrectly classified the legitimate
+flag as stale — the same stuck-recording symptom as bug #19.
+
+**Root cause**: `rec_start_wall = time.time()` was at line 634, but
+`server.accept()` was at line 583. The key-release could happen anywhere
+in that gap.
+
+**Fix**: Snapshot wall-clock immediately after `server.accept()`, before
+any request processing. Since key-up always happens after key-down, and
+key-down triggers the socket connection, `accept()` time is always ≤
+key-up time.
