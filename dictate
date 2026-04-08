@@ -520,6 +520,10 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                     if silent_count >= SILENT_THRESHOLD:
                         mic_healthy = False
                         silent_count = 0
+                        # Abort any active recording — mic is dead, no point accumulating silence
+                        if rec_active[0]:
+                            print("\n  [rec-stop] mic lost during recording", flush=True)
+                            rec_active[0] = False
                         print("WARNING: microphone went silent — disconnected or switched?")
                         notify("Microphone lost", "Dictate: mic returning silence. Reconnect your microphone.", "audio-input-microphone")
             else:
@@ -624,9 +628,10 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                 send_status("recording")
                 print("● Recording...", end="", flush=True)
 
-                # Clear stale stop flag from previous recording
-                if os.path.exists(STOP_FLAG):
-                    os.unlink(STOP_FLAG)
+                # Record wall-clock time BEFORE starting — used to distinguish
+                # stale STOP_FLAGs from legitimate ones (mtime comparison).
+                import time as _walltime
+                rec_start_wall = _walltime.time()
 
                 # Start recording using the existing prebuf_stream (no second stream)
                 rec_buffer.clear()
@@ -639,13 +644,31 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                 rec_wait_secs[0] = wait
                 rec_active[0] = True
 
+                # Safety net: hard timeout prevents stuck recordings when
+                # audio callbacks stop (device disconnect) or STOP_FLAG is lost.
+                hard_timeout = config.get("max_recording_secs", 120)
+                hard_deadline = _time.monotonic() + hard_timeout
+
                 # Wait for recording to finish (silence detected, timeout, or STOP_FLAG)
                 while rec_active[0]:
                     sd.sleep(100)
-                    if os.path.exists(STOP_FLAG):
-                        os.unlink(STOP_FLAG)
-                        print(f"\n  [rec-stop] STOP_FLAG (key released)", flush=True)
-                        rec_speech_detected[0] = True
+                    # Check STOP_FLAG — only react to flags created AFTER this
+                    # recording started (mtime >= rec_start_wall) to avoid
+                    # consuming a stale flag from a previous session.
+                    try:
+                        if os.path.exists(STOP_FLAG):
+                            flag_mtime = os.path.getmtime(STOP_FLAG)
+                            if flag_mtime >= rec_start_wall:
+                                os.unlink(STOP_FLAG)
+                                print(f"\n  [rec-stop] STOP_FLAG (key released)", flush=True)
+                                rec_speech_detected[0] = True
+                                rec_active[0] = False
+                            else:
+                                os.unlink(STOP_FLAG)  # clean up stale flag
+                    except OSError:
+                        pass  # flag disappeared between exists() and getmtime()
+                    if _time.monotonic() > hard_deadline:
+                        print(f"\n  [rec-stop] hard timeout ({hard_timeout}s)", flush=True)
                         rec_active[0] = False
 
                 elapsed = _time.monotonic() - rec_start[0]
