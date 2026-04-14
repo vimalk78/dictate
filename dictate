@@ -821,20 +821,14 @@ def ptt_client(language, key_code, key_name, device_path):
     import threading
     import time as _time
 
-    # Auto-reap child processes (wl-copy, pw-play) to prevent zombies
+    # Auto-reap child processes (xsel, pw-play) to prevent zombies
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 
-    wl_copy_proc = None
-
     def clipboard_copy(text):
-        nonlocal wl_copy_proc
-        if wl_copy_proc is not None:
-            try:
-                wl_copy_proc.kill()
-            except OSError:
-                pass
-        wl_copy_proc = subprocess.Popen(["wl-copy", "-f", text],
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(
+            ["xsel", "--clipboard", "--input"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p.communicate(input=text.encode())
 
     def setup_keyboards():
         if device_path:
@@ -954,7 +948,6 @@ def ptt_client(language, key_code, key_name, device_path):
 def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, initial_prompt):
     audio_buffer = []
     is_recording = False
-    wl_copy_proc = None
 
     def audio_callback(indata, frames, time_info, status):
         if is_recording:
@@ -1006,13 +999,11 @@ def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, init
                         text, metrics = transcribe_audio(model, audio, language, initial_prompt)
 
                         if text:
-                            if wl_copy_proc is not None:
-                                try:
-                                    wl_copy_proc.kill()
-                                except OSError:
-                                    pass
-                            wl_copy_proc = subprocess.Popen(["wl-copy", "-f", text],
-                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            p = subprocess.Popen(
+                                ["xsel", "--clipboard", "--input"],
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            p.communicate(input=text.encode())
                             print(f" done. [copied]\n> {text}\n")
                         else:
                             print(" (no speech detected)\n")

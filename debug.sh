@@ -56,14 +56,20 @@ for path in sorted(evdev.list_devices()):
 " 2>/dev/null || echo "  evdev not available or no permission (need input group)"
 
 echo ""
-echo "=== wl-copy processes ==="
+echo "=== Clipboard processes ==="
+XSEL_COUNT=$(pgrep -c xsel 2>/dev/null) || XSEL_COUNT=0
 WL_COUNT=$(pgrep -c wl-copy 2>/dev/null) || WL_COUNT=0
-if [ "$WL_COUNT" -le 1 ]; then
-    echo "  ✓ $WL_COUNT wl-copy running (normal)"
-else
-    echo "  ⚠ $WL_COUNT wl-copy processes — stale processes may be blocking clipboard"
-    ps -o pid,etime,args -C wl-copy 2>/dev/null | sed 's/^/  /'
+if [ "$WL_COUNT" -gt 0 ]; then
+    echo "  ⚠ $WL_COUNT stale wl-copy processes (should be 0 — dictate uses xsel now)"
+    ps -o pid,etime,args -C wl-copy 2>/dev/null | sed 's/^/      /'
     echo "  Fix: pkill wl-copy"
+fi
+if [ "$XSEL_COUNT" -le 1 ]; then
+    echo "  ✓ $XSEL_COUNT xsel running (normal)"
+else
+    echo "  ⚠ $XSEL_COUNT xsel processes — stale processes may be blocking clipboard"
+    ps -o pid,etime,args -C xsel 2>/dev/null | sed 's/^/      /'
+    echo "  Fix: pkill xsel"
 fi
 
 echo ""

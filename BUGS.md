@@ -328,12 +328,20 @@ $ wl-copy -f "first" & wl-copy -f "second" & sleep 0.5 && pgrep -a wl-copy
 ```
 One process. The old `-f` process exited via `data_source.cancelled`.
 
-**Fix**: Add `-f` (foreground) flag to all `wl-copy` invocations.
-With `-f`, wl-copy does not fork — the process Popen tracks IS the
-clipboard server, so `.kill()` actually terminates it. Also added
-process tracking to `push_to_talk()` (previously untracked).
+**Fix**: Replace `wl-copy` with `xsel --clipboard --input` (via
+XWayland). This sidesteps the Wayland focus problem entirely:
 
-**History of this bug** (3 attempts):
+- X11 `XSetSelectionOwner` does not require focus — any client can
+  set the selection at any time.
+- GNOME/mutter auto-syncs the X11 clipboard to the Wayland clipboard,
+  so `wl-paste` and Ctrl+V in Wayland apps still work.
+- X11 reliably retires old selection owners, so no manual process
+  tracking or kill is needed — `clipboard_copy` is just 3 lines.
+- `xsel` uses `override_redirect` for its X11 window, so it does not
+  appear in GNOME alt-tab. (`xclip` was also tested but created a
+  visible "Unknown" window in the task switcher.)
+
+**History of this bug** (4 attempts):
 1. `3a4819d` (2026-03-26): Switched to Popen + tracking + `.kill()`.
    No `-f`. Tracking was fundamentally broken — always killing dead
    parent PIDs of forked daemons. Appeared to work because Wayland
@@ -341,5 +349,11 @@ process tracking to `push_to_talk()` (previously untracked).
 2. 2026-04-14 (uncommitted, reverted): Tried `-f` + `pkill` together.
    The `pkill`-before-spawn created a clipboard gap. Blamed `-f`,
    reverted both. Wrong diagnosis.
-3. 2026-04-15 (this fix): Added `-f` only, with empirical evidence
-   proving the fork is the root cause. No `pkill`.
+3. 2026-04-15 (`e2fd2bf`): Added `-f` only, with empirical evidence
+   proving the fork is the root cause. Fixed stale processes but
+   clipboard STILL failed with "Always on Top" — `wl-copy -f` could
+   not `set_selection` without Wayland focus.
+4. 2026-04-15 (this fix): Abandoned wl-copy entirely. Switched to
+   `xsel` via XWayland. X11 has no focus requirement for setting
+   the clipboard. `xclip` was tried first but showed "Unknown"
+   window in alt-tab; `xsel` uses `override_redirect` and is invisible.
