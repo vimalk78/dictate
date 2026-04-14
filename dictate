@@ -833,7 +833,7 @@ def ptt_client(language, key_code, key_name, device_path):
                 wl_copy_proc.kill()
             except OSError:
                 pass
-        wl_copy_proc = subprocess.Popen(["wl-copy", text],
+        wl_copy_proc = subprocess.Popen(["wl-copy", "-f", text],
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def setup_keyboards():
@@ -954,6 +954,7 @@ def ptt_client(language, key_code, key_name, device_path):
 def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, initial_prompt):
     audio_buffer = []
     is_recording = False
+    wl_copy_proc = None
 
     def audio_callback(indata, frames, time_info, status):
         if is_recording:
@@ -1005,7 +1006,12 @@ def push_to_talk(model, language, key_code, key_name, keyboards, audio_dev, init
                         text, metrics = transcribe_audio(model, audio, language, initial_prompt)
 
                         if text:
-                            subprocess.Popen(["wl-copy", text],
+                            if wl_copy_proc is not None:
+                                try:
+                                    wl_copy_proc.kill()
+                                except OSError:
+                                    pass
+                            wl_copy_proc = subprocess.Popen(["wl-copy", "-f", text],
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             print(f" done. [copied]\n> {text}\n")
                         else:

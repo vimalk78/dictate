@@ -243,7 +243,7 @@ mic-lost during an active recording, aborting it immediately.
 ---
 
 ### 22. rec_start_wall recorded too late — mtime check defeated
-**Date**: 2026-04-08 &ensp; **Commit**: *(pending)*
+**Date**: 2026-04-08 &ensp; **Commit**: `8780f42`
 
 Found by TLA+ model checker (TLC). The mtime fix for bug #19 recorded
 `rec_start_wall` after reading the request, parsing JSON, sending status,
@@ -260,3 +260,86 @@ in that gap.
 any request processing. Since key-up always happens after key-down, and
 key-down triggers the socket connection, `accept()` time is always ≤
 key-up time.
+
+---
+
+### 23. Dead mic stream not detected — Whisper hallucinating on silence
+**Date**: 2026-04-14 &ensp; **Commit**: `89d5d0b`
+
+KVM switch changed PipeWire audio profile from `input:analog-stereo`
+(working mic) to `input:iec958-stereo` (dead S/PDIF digital input).
+Audio callbacks continued firing but delivered all-zero samples.
+`recent_rms` deque retained stale non-zero values from before the
+switch, so `mic_monitor` thought the mic was healthy. Recordings
+captured `max_rms=0.0000` and Whisper hallucinated "Thank you." and
+"Closed Captioning provided by RMS.com."
+
+**Root cause**: `mic_monitor` checked `recent_rms` contents but never
+cleared the deque between cycles. Old RMS values from when the mic was
+working masked the dead stream.
+
+**Fix**: Three changes:
+1. `mic_monitor` clears `recent_rms` at the start of each 5s cycle —
+   empty deque after sleep = callbacks stopped = dead stream.
+2. 60-second cooldown after reconnect to suppress notification spam
+   during PipeWire route switching.
+3. Reject recordings with `max_rms < 0.0001` before transcription —
+   send "No audio captured" desktop notification instead.
+4. Startup notification when calibration fails (`threshold <= 0.01`).
+
+---
+
+### 24. Stale wl-copy processes — clipboard serving old transcription
+**Date**: 2026-04-15 &ensp; **Commit**: *(pending)*
+
+Multiple wl-copy processes accumulated over time. The clipboard served
+the text from the oldest process, not the latest transcription.
+Correlated with GNOME "Always on Top" window mode.
+
+**Root cause**: `wl-copy` (without `-f`) **forks a background daemon**.
+The parent process exits immediately after forking. `subprocess.Popen`
+captured the parent's PID. When `clipboard_copy()` called `.kill()` on
+the next transcription, it sent SIGKILL to the long-dead parent PID —
+a no-op. The actual clipboard-serving child daemon (different PID) was
+never touched.
+
+Normally, Wayland's `data_source.cancelled` protocol causes the old
+daemon to exit when a new wl-copy takes clipboard ownership. But with
+GNOME "Always on Top" windows, the focus/serial mechanism that triggers
+ownership transfer appears to fail, so old daemons persist indefinitely.
+
+**Empirical evidence** (from debugging session):
+```
+$ wl-copy "test" && sleep 0.5 && pgrep -a wl-copy
+323489 wl-copy <old text still alive>
+326264 wl-copy test
+```
+Two processes. Old one never got `data_source.cancelled`.
+
+```
+$ pkill -x wl-copy && wl-copy -f "test" & sleep 0.5 && pgrep -a wl-copy
+326544 wl-copy -f test-foreground
+```
+One process. `-f` prevents forking — Popen tracks the actual server.
+
+```
+$ wl-copy -f "first" & wl-copy -f "second" & sleep 0.5 && pgrep -a wl-copy
+326800 wl-copy -f second
+```
+One process. The old `-f` process exited via `data_source.cancelled`.
+
+**Fix**: Add `-f` (foreground) flag to all `wl-copy` invocations.
+With `-f`, wl-copy does not fork — the process Popen tracks IS the
+clipboard server, so `.kill()` actually terminates it. Also added
+process tracking to `push_to_talk()` (previously untracked).
+
+**History of this bug** (3 attempts):
+1. `3a4819d` (2026-03-26): Switched to Popen + tracking + `.kill()`.
+   No `-f`. Tracking was fundamentally broken — always killing dead
+   parent PIDs of forked daemons. Appeared to work because Wayland
+   protocol usually retired old daemons.
+2. 2026-04-14 (uncommitted, reverted): Tried `-f` + `pkill` together.
+   The `pkill`-before-spawn created a clipboard gap. Blamed `-f`,
+   reverted both. Wrong diagnosis.
+3. 2026-04-15 (this fix): Added `-f` only, with empirical evidence
+   proving the fork is the root cause. No `pkill`.
