@@ -496,11 +496,35 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                     print(f"\n  [rec-stop] wait timeout ({rec_wait_secs[0]}s, no speech detected)", flush=True)
                     rec_active[0] = False
 
-    prebuf_stream = sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-        callback=prebuf_callback, device=audio_dev, blocksize=1024,
-    )
-    prebuf_stream.start()
+    # Held in a list so mic_monitor can close/reopen it. A stream left open on
+    # a vanished device makes PortAudio/ALSA loop on xruns and leak memory
+    # (seen growing to ~10G before the OOM killer stepped in).
+    prebuf_stream = [None]
+    stream_lock = threading.Lock()
+
+    def open_prebuf_stream():
+        with stream_lock:
+            if prebuf_stream[0] is not None:
+                return
+            s = sd.InputStream(
+                samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                callback=prebuf_callback, device=audio_dev, blocksize=1024,
+            )
+            s.start()
+            prebuf_stream[0] = s
+
+    def close_prebuf_stream():
+        with stream_lock:
+            s, prebuf_stream[0] = prebuf_stream[0], None
+        if s is None:
+            return
+        try:
+            s.abort()
+            s.close()
+        except Exception as e:
+            print(f"  Closing audio stream failed: {e}")
+
+    open_prebuf_stream()
     print("Pre-buffer stream started (1s rolling buffer).")
 
     # Monitor mic health — detect disconnects and re-calibrate on reconnect
@@ -516,10 +540,23 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
         SILENT_THRESHOLD = 6  # require 6 consecutive silent checks (30s) before declaring lost
         last_reconnect = 0
         RECONNECT_COOLDOWN = 60  # seconds — suppress lost detection after reconnect
+        PROBE_INTERVAL = 15  # seconds between reopen attempts while mic is lost
         while True:
+            if not mic_healthy:
+                # Stream is closed while the mic is lost; periodically reopen
+                # it and let the next 5s window decide whether audio is back.
+                time.sleep(PROBE_INTERVAL)
+                try:
+                    open_prebuf_stream()
+                except Exception as e:
+                    print(f"  Mic reopen failed: {e}")
+                    continue
             recent_rms.clear()
             time.sleep(5)
             if not recent_rms or np.mean(list(recent_rms)) < 0.0001:
+                if not mic_healthy:
+                    close_prebuf_stream()
+                    continue
                 if mic_healthy:
                     if time.monotonic() - last_reconnect < RECONNECT_COOLDOWN:
                         continue
@@ -530,7 +567,8 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                         if rec_active[0]:
                             print("\n  [rec-stop] mic lost during recording", flush=True)
                             rec_active[0] = False
-                        print("WARNING: microphone went silent — disconnected or switched?")
+                        close_prebuf_stream()
+                        print("WARNING: microphone went silent — disconnected or switched? Audio stream closed, will retry.")
                         notify("Microphone lost", "Dictate: mic returning silence. Reconnect your microphone.", "audio-input-microphone")
             else:
                 silent_count = 0
@@ -559,8 +597,7 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
     server.listen(1)
 
     def cleanup(signum=None, frame=None):
-        prebuf_stream.stop()
-        prebuf_stream.close()
+        close_prebuf_stream()
         server.close()
         for p in (SOCK_PATH, PID_PATH):
             if os.path.exists(p):
