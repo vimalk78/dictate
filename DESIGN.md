@@ -41,7 +41,7 @@ copies to clipboard. No daemon needed.
 - Key detection via `evdev` + `selectors.DefaultSelector` (all keyboards monitored)
 - Persistent `sounddevice.InputStream` (zero startup delay)
 - Transcription via `faster-whisper.WhisperModel`
-- Output via `wl-copy` (Wayland clipboard)
+- Output via `xsel` (clipboard through XWayland)
 
 ### 2. Daemon mode (`dictate --serve`)
 
@@ -209,9 +209,15 @@ Launch: `EDITOR=dictate-editor claude`
 
 ### System packages
 - `portaudio` — audio I/O
-- `wl-clipboard` — Wayland clipboard (`wl-copy`)
+- `xsel` — clipboard
+- `pipewire-utils` (`pw-play`) — completion sounds
+- `libnotify` (`notify-send`) — desktop notifications
+- `gcc`, `python3-devel`, `kernel-headers` — build `evdev` (no binary wheels)
+- `uv` — venv and package install
 
-### Python packages (in venv)
+`install.sh` checks all of these up front (see README for Ubuntu package names).
+
+### Python packages (in venv, exact versions from `requirements.lock`)
 - `faster-whisper` — Whisper inference via ctranslate2
 - `evdev` — Linux input device access
 - `sounddevice` — PortAudio bindings
@@ -221,7 +227,8 @@ Launch: `EDITOR=dictate-editor claude`
 ## Known issues and decisions
 
 - **Wayland**: `wtype` doesn't work on GNOME Wayland ("compositor does not support
-  virtual keyboard protocol"), so clipboard via `wl-copy` is used instead
+  virtual keyboard protocol"), and `wl-copy` can't set the selection without
+  focus, so clipboard via `xsel` (XWayland) is used instead (see BUGS.md)
 - **AirPods mic**: Must use `pipewire` ALSA device, not `default`, to pick up
   Bluetooth audio
 - **CUDA 13 + ctranslate2**: Needs `nvidia-cublas-cu12` pip package because

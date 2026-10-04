@@ -16,7 +16,7 @@ cd dictate
 bash install.sh
 ```
 
-Reboot or re-login once (for `input` group membership). That's it.
+The installer first checks requirements and changes nothing if any are missing — it prints the exact commands to run (one `dnf`/`apt-get` line, plus adding you to the `input` group). Run them, log out and back in, and run `bash install.sh` again. The installer itself never uses `sudo`.
 
 Two background services start on every login:
 - **dictate** — daemon with Whisper model loaded in memory
@@ -193,23 +193,51 @@ No GPU required. The `small` model on CPU is good enough for English dictation. 
 
 ## Requirements
 
-- Linux with Wayland (tested on Fedora 43, Ubuntu 22.04)
-- Python 3.10+
+- Linux desktop with PipeWire (tested on Fedora 43/44, Ubuntu 22.04/24.04)
 - A microphone (laptop mic, USB mic, AirPods — anything that shows up as an input device)
 - NVIDIA GPU (optional, falls back to CPU)
-- For Jetson (aarch64): build ctranslate2 from source first — see `build-ctranslate2.sh`
+
+`install.sh` checks for all of these and tells you how to install what's missing:
+
+| Requirement | Why | Fedora | Ubuntu/Debian |
+|---|---|---|---|
+| Python 3.10+ (system `/usr/bin/python3`) | runtime | `python3` | `python3` |
+| [uv](https://docs.astral.sh/uv/) | creates the venv | `uv` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| gcc, Python headers, Linux headers | compile `evdev` (no binary wheels) | `gcc python3-devel kernel-headers` | `gcc python3-dev linux-libc-dev` |
+| PortAudio | audio capture | `portaudio` | `libportaudio2` |
+| xsel | clipboard | `xsel` | `xsel` |
+| pw-play | completion sounds | `pipewire-utils` | `pipewire-bin` |
+| notify-send | desktop notifications | `libnotify` | `libnotify-bin` |
+| `input` group | read the push-to-talk key | `sudo usermod -aG input $USER` | same |
+
+Python packages are installed at exact versions from `requirements.lock` (generated from `requirements.txt` with `uv pip compile`).
+
+For Jetson (aarch64): build ctranslate2 from source first — see `build-ctranslate2.sh`.
+
+## Troubleshooting
+
+**First start hangs at `Loading whisper model ...`** — the model is downloaded from Hugging Face on first use. If your network advertises IPv6 but doesn't route it, Python waits out each IPv6 timeout before trying IPv4 (browsers don't show the problem because they try both at once). Check with:
+
+```
+curl -6 -sS -m 6 -o /dev/null -w "%{http_code}\n" https://huggingface.co
+```
+
+`000` means IPv6 is broken: restart your router, or disable IPv6 on the connection (`nmcli connection modify "<name>" ipv6.method disabled`).
+
+**First key press does nothing** — the daemon may still be downloading or loading the model. Check `journalctl --user -u dictate -f` for `Daemon ready`.
 
 ## Uninstall
 
 ```
-systemctl --user disable --now dictate dictate-ptt
-rm -rf ~/.local/share/dictate ~/.local/bin/dictate ~/.local/bin/dictate-editor
-rm -rf ~/.config/systemd/user/dictate.service ~/.config/systemd/user/dictate-ptt.service
-rm -rf ~/.config/dictate
+bash uninstall.sh
 ```
+
+Removes the services, launcher, venv, and `/dictate` command. Asks before deleting your config, hints, transcription log, and downloaded Whisper models (`--purge` deletes them without asking). System-level leftovers (`input` group, system packages) are listed as commands for you to run.
 
 ## Tested on
 
 - Fedora 43, NVIDIA GTX 1650 (4GB), Keychron K8, AirPods mic
 - Fedora 43, Intel integrated (no GPU), laptop mic + AirPods
 - Jetson Orin Nano (JetPack 6.x, 8GB), network transcription server
+- Fedora 44, Intel HD 530 (no GPU), USB webcam mic
+- Clean install in containers (`tests/install-test.sh`): Fedora 44, Ubuntu 24.04, Ubuntu 22.04

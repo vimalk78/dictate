@@ -11,7 +11,8 @@ Dictate is a voice-to-text tool for Claude Code on Linux. It records speech usin
 ### Running locally
 
 ```bash
-bash install.sh                    # full install (system deps, venv, launcher)
+bash install.sh                    # checks requirements (prints fix commands, never sudo), then venv + launcher
+bash uninstall.sh                  # remove everything (asks before config/models; --purge to skip)
 bash install-service.sh            # install and start systemd services
 bash update.sh                     # update after code changes (no venv rebuild)
 dictate --serve &                  # start daemon (keeps Whisper model in memory)
@@ -30,7 +31,15 @@ After code changes, run `bash update.sh` to deploy — it copies the script, ser
 
 ### Testing
 
-No test suite. Manual testing:
+Install test (fresh distro in a podman container — run before each release):
+
+```bash
+bash tests/install-test.sh fedora:44     # also: ubuntu:24.04, ubuntu:22.04 (Python 3.10, like Jetson)
+```
+
+It runs install.sh on a bare image (must fail with a requirements list), applies the printed fixes, installs, transcribes a speech sample via `--listen`, then checks `uninstall.sh --purge` leaves nothing. It cannot test mic, keyboard, clipboard, or services.
+
+No unit tests. Manual testing:
 
 ```bash
 dictate --serve &                  # start daemon
@@ -49,13 +58,14 @@ Test local daemon, network forwarding, and push-to-talk separately — they shar
 
 ## Architecture
 
-Single Python script (`dictate`, ~720 lines) with five modes:
+Single Python script (`dictate`, ~1180 lines) with six modes:
 
-1. **Push-to-talk** (default) — loads model, listens for key press via evdev, records, transcribes, copies to clipboard via `wl-copy`
+1. **Push-to-talk** (default) — loads model, listens for key press via evdev, records, transcribes, copies to clipboard via `xsel`
 2. **Daemon** (`--serve`) — keeps model loaded, listens on Unix socket (`~/.local/share/dictate/dictate.sock`), maintains rolling 1-second pre-buffer, handles one request at a time
 3. **Daemon forwarding** (`--serve --server H:P`) — same as daemon but skips model loading; after recording, forwards audio over TCP to a remote transcription server
 4. **TCP transcription server** (`--serve --listen H:P`) — headless, no mic; receives audio over TCP, transcribes with local Whisper model, returns text
 5. **Client** (`--once`) — connects to daemon socket, sends JSON request with language + hints, reads newline-delimited JSON responses, prints final text to stdout (unchanged by network mode)
+6. **PTT client** (`--ptt`) — no model, no mic; watches the key via evdev, sends a `--once`-style request to the daemon, touches `STOP_FLAG` on key release, copies the result with `xsel`. Runs as `dictate-ptt.service`
 
 ### Daemon ↔ Client protocol (Unix socket)
 
@@ -105,7 +115,9 @@ Server → Daemon:
 
 ## Key design decisions
 
-- **Wayland only**: `wtype` doesn't work on GNOME Wayland, so clipboard via `wl-copy` is used
+- **Clipboard via `xsel` (XWayland)**: `wtype` doesn't work on GNOME Wayland, and `wl-copy` can't set the selection without focus; `xsel` has no focus requirement (see BUGS.md)
+- **Pinned dependencies**: `requirements.txt` lists direct deps; `requirements.lock` (generated with `uv pip compile requirements.txt --universal --python-version 3.10 -o requirements.lock`) pins exact versions, with separate entries for Python 3.10. install.sh installs the lock. Regenerating with the old lock in place keeps existing pins where possible
+- **Installer never uses sudo**: install.sh checks everything first and prints the commands to run; `uv` is required (single install path)
 - **PipeWire preference**: `default` ALSA device doesn't route Bluetooth mic correctly; must use pipewire device by name
 - **`hotwords` removed**: tested but degraded transcription with many terms; `initial_prompt` works better
 - **`hallucination_silence_threshold=2`**: prevents Whisper from hallucinating text on silence
@@ -124,7 +136,7 @@ JetPack 6.x ships Python 3.10 and no PyPI ctranslate2 CUDA wheels for aarch64. T
    bash build-ctranslate2.sh
    ```
    This saves a wheel to `~/.local/share/dictate/wheels/`.
-2. **Run install.sh** — detects aarch64, installs the pre-built wheel, skips `nvidia-cublas-cu12` (CUDA libs from JetPack), uses `/usr/local/cuda/lib64` in launcher.
+2. **Run install.sh** — detects aarch64, installs the pre-built wheel together with the lock minus its `ctranslate2` pin (otherwise uv would swap in PyPI's CPU-only wheel), skips `nvidia-cublas-cu12` (CUDA libs from JetPack), uses `/usr/local/cuda/lib64` in launcher.
 
 The `tomli` backport is installed automatically for Python < 3.11.
 
