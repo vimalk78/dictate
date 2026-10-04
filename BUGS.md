@@ -357,3 +357,82 @@ XWayland). This sidesteps the Wayland focus problem entirely:
    `xsel` via XWayland. X11 has no focus requirement for setting
    the clipboard. `xclip` was tried first but showed "Unknown"
    window in alt-tab; `xsel` uses `override_redirect` and is invisible.
+
+---
+
+### 25. Installer failed on clean systems
+**Date**: 2026-10-04 &ensp; **Commit**: `cc08150`
+
+First install on a machine other than the dev box (mini PC, then bare
+Fedora 44 / Ubuntu 24.04 / Ubuntu 22.04 containers) failed in several
+ways, each hidden on the dev box because the dependency was already there:
+
+- Without `uv`, the pip fallback ran `pip install --python ...` — uv's
+  syntax; pip requires `--python` before the subcommand. Never worked.
+- `xsel`, `pw-play`, `notify-send` are launched by the code without
+  error handling but were never installed (unused `wl-clipboard` and
+  `wtype` were).
+- `evdev` has no binary wheels; building it needs `gcc`, Python headers
+  (`python3-devel`), and kernel headers.
+- On Ubuntu, the printed `curl ... | sh` uv install needs `curl`, which a
+  default install lacks.
+- It ran `sudo dnf`/`usermod` before discovering these, leaving a
+  half-installed system.
+
+**Fix**: Check every requirement first; if any is missing, print one
+package-install command and exit without changing anything. Require uv.
+Never call sudo. `tests/install-test.sh` now runs the whole flow on bare
+container images.
+
+---
+
+### 26. Unpinned dependencies — fresh installs got untested versions
+**Date**: 2026-10-04 &ensp; **Commit**: `508cad4`
+
+`requirements.txt` pinned nothing. A fresh install pulled `av` 19.0.1,
+which breaks `faster_whisper.decode_audio()` (`unexpected keyword
+argument 'metadata_errors'`). dictate doesn't call it, but nothing
+stopped the next breaking release from hitting a function it does use.
+
+**Fix**: `requirements.lock` with the ThinkPad's versions, plus separate
+entries for Python 3.10 (numpy 2.3+ and onnxruntime 1.24+ dropped it) —
+those match the working Jetson.
+
+On Jetson, installing the lock would have replaced the locally built CUDA
+`ctranslate2` wheel with PyPI's CPU-only aarch64 wheel whenever the
+versions differed. The wheel is now installed in place of the lock's pin,
+and `build-ctranslate2.sh` builds the matching release tag instead of
+the default branch.
+
+---
+
+### 27. Daemon OOM-killed after mic failure — ALSA xrun loop
+**Date**: 2026-10-04 &ensp; **Commits**: `2508e14`, `ca9797c`
+
+GNOME showed "memory nearly full" and the kernel OOM-killed the daemon
+twice (18:17, 21:25), ~3.5 min after `microphone went silent`. Peak 9.6G
+RAM + 5.7G swap. In between, ~84k repetitions each of
+`PaAlsaStream_HandleXrun` / `AlsaRestart` / `AlsaStart` failures.
+
+**Root cause**: mic_monitor detected the silence and notified, but left
+the pre-buffer stream open on the failing device. PortAudio's ALSA
+backend looped on xrun recovery and memory grew without bound.
+
+**Fix**: Close the stream after 30s of silence, retry opening it every
+15s, re-calibrate when audio returns. `MemoryMax=3G` in dictate.service
+so a future leak kills only dictate, not the desktop.
+
+**Tested**: unplugging the only mic (USB webcam) for 5 min — stream closed
+after 16s, reopen failed cleanly, RSS flat at ~400M, recovered ~20s after
+replug. The xrun loop itself did not reproduce on a clean unplug, so the
+original trigger (USB power-save? PipeWire route switch?) is still unknown.
+
+---
+
+### 28. `dictate --stop` crashed on a stale PID file
+**Date**: 2026-10-04 &ensp; **Commit**: `48c0c78`
+
+`os.kill` raised `ProcessLookupError` when the daemon was already dead,
+failing the service's ExecStop ("Control process exited, status=1/FAILURE").
+
+**Fix**: Catch it and report the daemon wasn't running.
