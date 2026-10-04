@@ -114,14 +114,19 @@ echo "Creating venv at $VENV_DIR..."
 uv venv --clear --python "$PYTHON" "$VENV_DIR"
 PIP_INSTALL="uv pip install --python $VENV_DIR/bin/python"
 
-# On aarch64 (Jetson): install pre-built ctranslate2 wheel
+# Exact versions (generated from requirements.txt — see header of requirements.lock)
 if [ "$ARCH" = "aarch64" ]; then
+    # Jetson: the locally built CUDA ctranslate2 wheel replaces the lock's
+    # ctranslate2 pin — otherwise uv swaps it for PyPI's CPU-only wheel.
     WHEEL=$(ls "$WHEEL_DIR"/ctranslate2*.whl | head -1)
-    echo "Installing pre-built ctranslate2 wheel: $(basename "$WHEEL")"
-    $PIP_INSTALL "$WHEEL"
+    echo "Using pre-built ctranslate2 wheel: $(basename "$WHEEL")"
+    LOCK_NO_CT2=$(mktemp)
+    grep -v '^ctranslate2==' "$SCRIPT_DIR/requirements.lock" > "$LOCK_NO_CT2"
+    $PIP_INSTALL "$WHEEL" -r "$LOCK_NO_CT2"
+    rm -f "$LOCK_NO_CT2"
+else
+    $PIP_INSTALL -r "$SCRIPT_DIR/requirements.lock"
 fi
-
-$PIP_INSTALL -r "$SCRIPT_DIR/requirements.txt"
 
 # Install CUDA libs if NVIDIA GPU is present (x86_64 only — Jetson uses JetPack system CUDA)
 if [ "$ARCH" != "aarch64" ] && command -v nvidia-smi &>/dev/null; then
