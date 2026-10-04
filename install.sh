@@ -4,6 +4,11 @@ set -e
 echo "=== dictate: push-to-talk voice input ==="
 
 ARCH=$(uname -m)
+SCRIPT_DIR="$(dirname "$0")"
+VENV_DIR="$HOME/.local/share/dictate/venv"
+WHEEL_DIR="$HOME/.local/share/dictate/wheels"
+# System Python, not whatever is first on PATH (e.g. conda)
+PYTHON=/usr/bin/python3
 
 # Detect distro
 if [ -f /etc/os-release ]; then
@@ -13,64 +18,115 @@ else
     DISTRO="unknown"
 fi
 
-echo "Detected: $DISTRO"
+echo "Detected: $DISTRO ($ARCH)"
 
-# Install system deps
-case "$DISTRO" in
-    fedora)
-        echo "Installing system packages..."
-        sudo dnf install -y portaudio wl-clipboard
-        # wtype may not be available on all Fedora versions
-        sudo dnf install -y wtype 2>/dev/null || echo "wtype not available, clipboard-only mode"
-        ;;
-    ubuntu|debian)
-        echo "Installing system packages..."
-        sudo apt-get update
-        sudo apt-get install -y libportaudio2 portaudio19-dev wl-clipboard wtype
-        ;;
-    *)
-        echo "Unknown distro '$DISTRO'. Install manually: portaudio, wl-clipboard, wtype"
-        ;;
-esac
+# ── Requirements check ───────────────────────────────────────────
+# Check everything up front and change nothing. If anything is missing,
+# print what to run and exit — this script never uses sudo.
 
-# Add user to input group (for evdev access without sudo)
-if ! groups "$USER" | grep -q '\binput\b'; then
-    echo "Adding $USER to input group..."
-    sudo usermod -aG input "$USER"
-    echo "NOTE: Log out and back in for group change to take effect."
+MISSING=()      # human-readable descriptions
+PKGS=()         # distro packages that fix them
+EXTRA_CMDS=()   # fixes that aren't a package install
+
+# require <description> <check command> <fedora pkg> <ubuntu/debian pkg>
+require() {
+    local desc="$1" check="$2" fedora_pkg="$3" debian_pkg="$4"
+    if ! eval "$check" &>/dev/null; then
+        MISSING+=("$desc")
+        case "$DISTRO" in
+            fedora) PKGS+=("$fedora_pkg") ;;
+            ubuntu|debian) PKGS+=("$debian_pkg") ;;
+            *) PKGS+=("$fedora_pkg") ;;
+        esac
+    fi
+}
+
+require "Python 3.10+ ($PYTHON)" \
+    "$PYTHON -c 'import sys; sys.exit(sys.version_info < (3, 10))'" python3 python3
+# evdev has no binary wheels on PyPI — it compiles a C extension
+require "C compiler (gcc, to build evdev)" "command -v gcc" gcc gcc
+require "Python headers (Python.h, to build evdev)" \
+    "$PYTHON -c 'import os, sys, sysconfig; sys.exit(not os.path.exists(os.path.join(sysconfig.get_path(\"include\"), \"Python.h\")))'" \
+    python3-devel python3-dev
+require "Linux input headers (to build evdev)" \
+    "test -f /usr/include/linux/input.h" kernel-headers linux-libc-dev
+require "PortAudio library (audio capture)" \
+    "ldconfig -p | grep -q libportaudio.so.2" portaudio libportaudio2
+require "xsel (clipboard)" "command -v xsel" xsel xsel
+require "pw-play (completion sounds)" "command -v pw-play" pipewire-utils pipewire-bin
+require "notify-send (desktop notifications)" "command -v notify-send" libnotify libnotify-bin
+
+# uv is not packaged for Ubuntu/Debian — use the upstream installer there
+if ! command -v uv &>/dev/null; then
+    MISSING+=("uv (Python package manager)")
+    case "$DISTRO" in
+        fedora) PKGS+=("uv") ;;
+        *)
+            command -v curl &>/dev/null || PKGS+=("curl")
+            EXTRA_CMDS+=("curl -LsSf https://astral.sh/uv/install.sh | sh")
+            ;;
+    esac
 fi
 
-# Create venv and install Python deps
-VENV_DIR="$HOME/.local/share/dictate/venv"
+# input group: needed to read the keyboard via evdev (push-to-talk)
+if ! id -nG "$USER" | grep -qw input; then
+    MISSING+=("membership in the 'input' group (push-to-talk key detection)")
+    EXTRA_CMDS+=("sudo usermod -aG input $USER    # then log out and back in")
+elif ! id -nG | grep -qw input; then
+    MISSING+=("'input' group not active in this session")
+    EXTRA_CMDS+=("# log out and back in (or reboot), then re-run this script")
+fi
+
+# Jetson: needs a ctranslate2 wheel built from source
+if [ "$ARCH" = "aarch64" ] && ! ls "$WHEEL_DIR"/ctranslate2*.whl &>/dev/null; then
+    MISSING+=("ctranslate2 wheel for aarch64 in $WHEEL_DIR/")
+    EXTRA_CMDS+=("bash $SCRIPT_DIR/build-ctranslate2.sh")
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo ""
+    echo "Missing requirements:"
+    for m in "${MISSING[@]}"; do
+        echo "  - $m"
+    done
+    echo ""
+    echo "To fix, run:"
+    if [ ${#PKGS[@]} -gt 0 ]; then
+        case "$DISTRO" in
+            fedora) echo "  sudo dnf install ${PKGS[*]}" ;;
+            ubuntu|debian) echo "  sudo apt-get install ${PKGS[*]}" ;;
+            *) echo "  install packages (Fedora names): ${PKGS[*]}" ;;
+        esac
+    fi
+    for c in "${EXTRA_CMDS[@]}"; do
+        echo "  $c"
+    done
+    echo ""
+    echo "Then re-run: bash $0"
+    exit 1
+fi
+
+echo "All requirements met."
+
+# ── Install ──────────────────────────────────────────────────────
+
 echo "Creating venv at $VENV_DIR..."
-if command -v uv &>/dev/null; then
-    PIP="uv pip"
-    uv venv "$VENV_DIR"
-else
-    PIP="$VENV_DIR/bin/pip"
-    python3 -m venv "$VENV_DIR"
-fi
+uv venv --clear --python "$PYTHON" "$VENV_DIR"
+PIP_INSTALL="uv pip install --python $VENV_DIR/bin/python"
 
 # On aarch64 (Jetson): install pre-built ctranslate2 wheel
 if [ "$ARCH" = "aarch64" ]; then
-    WHEEL_DIR="$HOME/.local/share/dictate/wheels"
-    WHEEL=$(ls "$WHEEL_DIR"/ctranslate2*.whl 2>/dev/null | head -1)
-    if [ -z "$WHEEL" ]; then
-        echo ""
-        echo "ERROR: No ctranslate2 wheel found in $WHEEL_DIR/"
-        echo "  On aarch64 (Jetson), build it first: bash build-ctranslate2.sh"
-        exit 1
-    fi
+    WHEEL=$(ls "$WHEEL_DIR"/ctranslate2*.whl | head -1)
     echo "Installing pre-built ctranslate2 wheel: $(basename "$WHEEL")"
-    $PIP install --python "$VENV_DIR/bin/python" "$WHEEL"
+    $PIP_INSTALL "$WHEEL"
 fi
 
-$PIP install --python "$VENV_DIR/bin/python" -r "$(dirname "$0")/requirements.txt"
+$PIP_INSTALL -r "$SCRIPT_DIR/requirements.txt"
 
 # Install CUDA libs if NVIDIA GPU is present (x86_64 only — Jetson uses JetPack system CUDA)
 if [ "$ARCH" != "aarch64" ] && command -v nvidia-smi &>/dev/null; then
     echo "NVIDIA GPU detected, installing CUDA libraries..."
-    $PIP install --python "$VENV_DIR/bin/python" nvidia-cublas-cu12
+    $PIP_INSTALL nvidia-cublas-cu12
 fi
 
 # Install launcher script
@@ -97,20 +153,20 @@ fi
 chmod +x ~/.local/bin/dictate
 
 # Copy the actual script and editor wrapper
-cp "$(dirname "$0")/dictate" "$HOME/.local/share/dictate/dictate.py"
-cp "$(dirname "$0")/dictate-editor" ~/.local/bin/dictate-editor
+cp "$SCRIPT_DIR/dictate" "$HOME/.local/share/dictate/dictate.py"
+cp "$SCRIPT_DIR/dictate-editor" ~/.local/bin/dictate-editor
 chmod +x ~/.local/bin/dictate-editor
 
 # Install default config (don't overwrite existing)
 mkdir -p ~/.config/dictate
 if [ ! -f ~/.config/dictate/config.toml ]; then
-    cp "$(dirname "$0")/config.toml.example" ~/.config/dictate/config.toml
+    cp "$SCRIPT_DIR/config.toml.example" ~/.config/dictate/config.toml
     echo "Created config at ~/.config/dictate/config.toml"
 fi
 
 # Install global hints (don't overwrite existing)
 mkdir -p ~/.config/dictate/hints.d
-for f in "$(dirname "$0")"/hints.d/*; do
+for f in "$SCRIPT_DIR"/hints.d/*; do
     [ -f "$f" ] || continue
     dst=~/.config/dictate/hints.d/"$(basename "$f")"
     [ -f "$dst" ] || cp "$f" "$dst"
@@ -119,7 +175,7 @@ echo "Installed global hints to ~/.config/dictate/hints.d/"
 
 # Install Claude Code integration
 mkdir -p ~/.claude/commands
-cp "$(dirname "$0")/dictate.claude-command" ~/.claude/commands/dictate.md
+cp "$SCRIPT_DIR/dictate.claude-command" ~/.claude/commands/dictate.md
 echo "Installed /dictate command for Claude Code."
 
 # Install systemd services (optional, for background daemon + push-to-talk)
@@ -129,16 +185,15 @@ if [ -d /run/systemd/system ] && [ "$ARCH" != "aarch64" ]; then
     yn="${yn:-y}"
     if [[ "$yn" =~ ^[Yy] ]]; then
         mkdir -p ~/.config/systemd/user
-        cp "$(dirname "$0")/dictate.service" ~/.config/systemd/user/dictate.service
-        cp "$(dirname "$0")/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
+        cp "$SCRIPT_DIR/dictate.service" ~/.config/systemd/user/dictate.service
+        cp "$SCRIPT_DIR/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
         systemctl --user daemon-reload
         systemctl --user enable --now dictate dictate-ptt
         echo "Services installed and started."
-        # Install suspend/resume hook (signals daemon on wake)
         if [ ! -f /usr/lib/systemd/system-sleep/dictate-resume ]; then
-            sudo cp "$(dirname "$0")/dictate-resume" /usr/lib/systemd/system-sleep/dictate-resume
-            sudo chmod +x /usr/lib/systemd/system-sleep/dictate-resume
-            echo "Installed suspend/resume hook."
+            echo ""
+            echo "Optional: log suspend/resume events in the transcription log:"
+            echo "  sudo install -m 755 $SCRIPT_DIR/dictate-resume /usr/lib/systemd/system-sleep/dictate-resume"
         fi
     fi
 fi
@@ -148,8 +203,3 @@ echo "Done! Run: dictate"
 echo "  Hold Right Ctrl to record, release to transcribe."
 echo "  Ctrl+V to paste the transcribed text."
 echo "  Edit ~/.config/dictate/config.toml to customize."
-echo ""
-if grep -q "^input:.*\b$USER\b" /etc/group && ! id -nG 2>/dev/null | grep -qw input; then
-    echo "⚠ IMPORTANT: Log out and back in for input group membership to take effect."
-    echo "  Without this, dictate cannot detect key presses."
-fi
