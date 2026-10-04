@@ -290,7 +290,7 @@ working masked the dead stream.
 ---
 
 ### 24. Stale wl-copy processes — clipboard serving old transcription
-**Date**: 2026-04-15 &ensp; **Commit**: *(pending)*
+**Date**: 2026-04-15 &ensp; **Commits**: `e2fd2bf`, `37a4bbd`
 
 Multiple wl-copy processes accumulated over time. The clipboard served
 the text from the oldest process, not the latest transcription.
@@ -353,7 +353,7 @@ XWayland). This sidesteps the Wayland focus problem entirely:
    proving the fork is the root cause. Fixed stale processes but
    clipboard STILL failed with "Always on Top" — `wl-copy -f` could
    not `set_selection` without Wayland focus.
-4. 2026-04-15 (this fix): Abandoned wl-copy entirely. Switched to
+4. 2026-04-15 (`37a4bbd`): Abandoned wl-copy entirely. Switched to
    `xsel` via XWayland. X11 has no focus requirement for setting
    the clipboard. `xclip` was tried first but showed "Unknown"
    window in alt-tab; `xsel` uses `override_redirect` and is invisible.
