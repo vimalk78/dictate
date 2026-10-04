@@ -1138,8 +1138,11 @@ def main():
     if args.stop:
         if os.path.exists(PID_PATH):
             pid = int(open(PID_PATH).read().strip())
-            os.kill(pid, signal.SIGTERM)
-            print(f"Stopped daemon (PID {pid}).")
+            try:
+                os.kill(pid, signal.SIGTERM)
+                print(f"Stopped daemon (PID {pid}).")
+            except ProcessLookupError:
+                print(f"Daemon (PID {pid}) was not running.")
         else:
             print("No daemon running.")
         return
