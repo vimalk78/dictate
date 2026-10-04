@@ -9,6 +9,11 @@ ExecStart=%h/.local/bin/dictate --serve
 ExecStop=%h/.local/bin/dictate --stop
 Restart=on-failure
 RestartSec=5
+# Safety net: normal use is ~0.4-1.6G (model size). If the daemon leaks
+# (e.g. PortAudio/ALSA xrun loop on a failing mic), only it gets killed and
+# restarted — not the rest of the desktop.
+MemoryMax=3G
+MemorySwapMax=512M
 
 [Install]
 WantedBy=default.target
