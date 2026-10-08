@@ -35,7 +35,8 @@ echo "Removed services."
 # Program files
 rm -f ~/.local/bin/dictate ~/.local/bin/dictate-editor
 rm -rf "$DATA_DIR/venv" "$DATA_DIR/wheels" "$DATA_DIR/__pycache__"
-rm -f "$DATA_DIR/dictate.py" "$DATA_DIR/dictate.sock" "$DATA_DIR/dictate.pid" "$DATA_DIR/stop"
+rm -f "$DATA_DIR/dictate.py" "$DATA_DIR/dictate.sock" "$DATA_DIR/dictate.pid" "$DATA_DIR/stop" \
+      "$DATA_DIR/version" "$DATA_DIR/requirements.lock"
 rm -f ~/.claude/commands/dictate.md
 echo "Removed program files."
 

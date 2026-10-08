@@ -3,6 +3,15 @@
 set -e
 
 SCRIPT_DIR="$(dirname "$0")"
+DATA_DIR="$HOME/.local/share/dictate"
+
+# The venv is not touched, so refuse if the pinned dependencies changed
+# since the last install.sh (or it predates install.sh recording the lock)
+if ! cmp -s "$SCRIPT_DIR/requirements.lock" "$DATA_DIR/requirements.lock"; then
+    echo "requirements.lock differs from the installed one (or install.sh predates it)."
+    echo "Run instead: bash $SCRIPT_DIR/install.sh"
+    exit 1
+fi
 
 # Update main script
 cp "$SCRIPT_DIR/dictate" ~/.local/share/dictate/dictate.py
@@ -27,11 +36,15 @@ if [ -d ~/.config/systemd/user ]; then
     cp "$SCRIPT_DIR/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
     systemctl --user daemon-reload
 
-    if systemctl --user is-active --quiet dictate.service; then
-        systemctl --user restart dictate.service dictate-ptt.service
-        echo "Restarted services"
-    fi
+    for s in dictate dictate-ptt dictate-server; do
+        if systemctl --user is-active --quiet "$s"; then
+            systemctl --user restart "$s"
+            echo "Restarted $s"
+        fi
+    done
 fi
+
+git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null > "$DATA_DIR/version" || echo unknown > "$DATA_DIR/version"
 
 # Update hints (don't overwrite user-edited files)
 mkdir -p ~/.config/dictate/hints.d

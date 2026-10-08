@@ -5,8 +5,11 @@ echo "=== dictate: push-to-talk voice input ==="
 
 ARCH=$(uname -m)
 SCRIPT_DIR="$(dirname "$0")"
-VENV_DIR="$HOME/.local/share/dictate/venv"
-WHEEL_DIR="$HOME/.local/share/dictate/wheels"
+DATA_DIR="$HOME/.local/share/dictate"
+VENV_DIR="$DATA_DIR/venv"
+WHEEL_DIR="$DATA_DIR/wheels"
+SERVICES=(dictate dictate-ptt dictate-server)
+NEW_VERSION=$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)
 # System Python, not whatever is first on PATH (e.g. conda)
 PYTHON=/usr/bin/python3
 
@@ -108,6 +111,38 @@ fi
 
 echo "All requirements met."
 
+# ── Existing install ─────────────────────────────────────────────
+# Reinstalling keeps config, hints, log, and models. Running services are
+# stopped first (the venv is rebuilt under them) and restarted at the end —
+# otherwise they keep running the old code.
+
+RUNNING=()
+if [ -f "$DATA_DIR/dictate.py" ] || [ -d "$VENV_DIR" ]; then
+    OLD_VERSION=$(cat "$DATA_DIR/version" 2>/dev/null || echo "unknown (installed before version tracking)")
+    echo ""
+    echo "dictate is already installed."
+    echo "  installed: $OLD_VERSION"
+    echo "  this repo: $NEW_VERSION"
+    echo "Reinstalling rebuilds the venv and replaces the program files."
+    echo "Your config, hints, transcription log, and downloaded models are kept."
+    if command -v systemctl &>/dev/null; then
+        for s in "${SERVICES[@]}"; do
+            systemctl --user is-active --quiet "$s" 2>/dev/null && RUNNING+=("$s")
+        done
+    fi
+    [ ${#RUNNING[@]} -gt 0 ] && echo "Running services will be restarted: ${RUNNING[*]}"
+    read -r -p "Reinstall? [Y/n] " yn || yn=""
+    yn="${yn:-y}"
+    if [[ ! "$yn" =~ ^[Yy] ]]; then
+        echo "Nothing changed."
+        exit 0
+    fi
+    if [ ${#RUNNING[@]} -gt 0 ]; then
+        systemctl --user stop "${RUNNING[@]}"
+        trap 'echo ""; echo "Install failed. Stopped services: ${RUNNING[*]} — fix the error and re-run install.sh."' ERR
+    fi
+fi
+
 # ── Install ──────────────────────────────────────────────────────
 
 echo "Creating venv at $VENV_DIR..."
@@ -183,24 +218,46 @@ mkdir -p ~/.claude/commands
 cp "$SCRIPT_DIR/dictate.claude-command" ~/.claude/commands/dictate.md
 echo "Installed /dictate command for Claude Code."
 
+# Record what was installed (shown on reinstall; update.sh compares the lock)
+echo "$NEW_VERSION" > "$DATA_DIR/version"
+cp "$SCRIPT_DIR/requirements.lock" "$DATA_DIR/requirements.lock"
+
 # Install systemd services (optional, for background daemon + push-to-talk)
 if [ -d /run/systemd/system ] && [ "$ARCH" != "aarch64" ]; then
-    echo ""
-    read -p "Install systemd services for background daemon + push-to-talk? [Y/n] " yn
-    yn="${yn:-y}"
-    if [[ "$yn" =~ ^[Yy] ]]; then
-        mkdir -p ~/.config/systemd/user
+    if [ -f ~/.config/systemd/user/dictate.service ]; then
+        # Already installed: update the unit files, but leave enabled/disabled
+        # as the user set it (e.g. disabled on a machine without a mic)
         cp "$SCRIPT_DIR/dictate.service" ~/.config/systemd/user/dictate.service
         cp "$SCRIPT_DIR/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
         systemctl --user daemon-reload
-        systemctl --user enable --now dictate dictate-ptt
-        echo "Services installed and started."
-        if [ ! -f /usr/lib/systemd/system-sleep/dictate-resume ]; then
-            echo ""
-            echo "Optional: log suspend/resume events in the transcription log:"
-            echo "  sudo install -m 755 $SCRIPT_DIR/dictate-resume /usr/lib/systemd/system-sleep/dictate-resume"
+        echo "Updated systemd services."
+    else
+        echo ""
+        read -r -p "Install systemd services for background daemon + push-to-talk? [Y/n] " yn || yn=""
+        yn="${yn:-y}"
+        if [[ "$yn" =~ ^[Yy] ]]; then
+            mkdir -p ~/.config/systemd/user
+            cp "$SCRIPT_DIR/dictate.service" ~/.config/systemd/user/dictate.service
+            cp "$SCRIPT_DIR/dictate-ptt.service" ~/.config/systemd/user/dictate-ptt.service
+            systemctl --user daemon-reload
+            systemctl --user enable dictate dictate-ptt
+            systemctl --user restart dictate dictate-ptt
+            echo "Services installed and started."
+            if [ ! -f /usr/lib/systemd/system-sleep/dictate-resume ]; then
+                echo ""
+                echo "Optional: log suspend/resume events in the transcription log:"
+                echo "  sudo install -m 755 $SCRIPT_DIR/dictate-resume /usr/lib/systemd/system-sleep/dictate-resume"
+            fi
         fi
     fi
+fi
+
+# Restart what was running before the reinstall (including a hand-installed
+# dictate-server, e.g. on the Jetson)
+if [ ${#RUNNING[@]} -gt 0 ]; then
+    trap - ERR
+    systemctl --user restart "${RUNNING[@]}"
+    echo "Restarted services: ${RUNNING[*]}"
 fi
 
 echo ""

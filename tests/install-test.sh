@@ -86,6 +86,13 @@ step "3. install.sh again (expect: success)"
 # fresh login shell picks up new group membership and ~/.local/bin
 as_user "cd /src && bash install.sh" </dev/null || fail "install.sh failed after applying its own fixes"
 
+step "3b. install.sh over an existing install (expect: detected, reinstalled)"
+out=$(as_user "cd /src && bash install.sh" </dev/null 2>&1) || { echo "$out"; fail "reinstall failed"; }
+echo "$out" | grep -q "already installed" || { echo "$out"; fail "reinstall did not detect the existing install"; }
+as_user "test -s ~/.local/share/dictate/version && cmp -s /src/requirements.lock ~/.local/share/dictate/requirements.lock" \
+    || fail "version or requirements.lock not recorded"
+echo "ok: reinstall detected"
+
 # A real desktop always has an audio server; without one, PortAudio's
 # PipeWire backend has been seen to hang at startup. Run PipeWire (no devices).
 uid=$(id -u tester)
