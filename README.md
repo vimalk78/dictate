@@ -226,6 +226,15 @@ curl -6 -sS -m 6 -o /dev/null -w "%{http_code}\n" https://huggingface.co
 
 **First key press does nothing** — the daemon may still be downloading or loading the model. Check `journalctl --user -u dictate -f` for `Daemon ready`.
 
+## Upgrading
+
+```
+git pull
+bash install.sh
+```
+
+The installer detects the existing install, shows the installed and new versions, and asks before reinstalling. Your config, hints, transcription log, and downloaded models are kept; running services are restarted on the new code.
+
 ## Uninstall
 
 ```

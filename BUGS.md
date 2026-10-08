@@ -427,6 +427,10 @@ after 16s, reopen failed cleanly, RSS flat at ~400M, recovered ~20s after
 replug. The xrun loop itself did not reproduce on a clean unplug, so the
 original trigger (USB power-save? PipeWire route switch?) is still unknown.
 
+**Also on the laptop** (pre-v0.1.0 code, no memory cap): OOM-killed
+2026-10-08 01:37 at 28.7G RSS, ~20k `HandleXrun` lines. journald itself
+was OOM-killed on Sep 25, 29, and 30 — likely the same loop.
+
 ---
 
 ### 28. `dictate --stop` crashed on a stale PID file
@@ -436,3 +440,24 @@ original trigger (USB power-save? PipeWire route switch?) is still unknown.
 failing the service's ExecStop ("Control process exited, status=1/FAILURE").
 
 **Fix**: Catch it and report the daemon wasn't running.
+
+---
+
+### 29. Reinstall left the old daemon running
+**Date**: 2026-10-08 &ensp; **Commit**: `0b808e7`
+
+After reinstalling v0.1.0 on the laptop, `install.sh` printed "Services
+installed and started" but the daemon was still the process started 12h
+earlier — old code, no OOM fix (only the new `MemoryMax` was applied, since
+systemd updates limits on a running unit). `systemctl enable --now` does not
+restart a running service. The venv was also rebuilt under the running
+daemon. The container test missed it: containers have no services.
+
+**Fix**: install.sh detects an existing install and asks (showing installed
+vs repo version), stops running services before rebuilding the venv, and
+restarts them at the end; install-service.sh restarts instead of starting.
+install.sh records the version and lock in `~/.local/share/dictate/`;
+update.sh refuses if the lock changed, since it never updates the venv.
+
+**Tested**: container test (fedora:44) with a new reinstall step; on the mini
+PC, reinstall over running services — both restarted on the new code.

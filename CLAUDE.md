@@ -11,10 +11,10 @@ Dictate is a voice-to-text tool for Claude Code on Linux. It records speech usin
 ### Running locally
 
 ```bash
-bash install.sh                    # checks requirements (prints fix commands, never sudo), then venv + launcher
+bash install.sh                    # checks requirements (prints fix commands, never sudo), then venv + launcher; also the upgrade path (detects an existing install, asks, restarts running services)
 bash uninstall.sh                  # remove everything (asks before config/models; --purge to skip)
 bash install-service.sh            # install and start systemd services
-bash update.sh                     # update after code changes (no venv rebuild)
+bash update.sh                     # update after code changes (no venv rebuild; refuses if requirements.lock changed)
 dictate --serve &                  # start daemon (keeps Whisper model in memory)
 dictate --once                     # send one request to daemon, print text
 dictate                            # standalone push-to-talk mode (no daemon)
@@ -27,7 +27,7 @@ dictate --once                          # client unchanged
 
 After install, reboot or re-login once for `input` group membership (required for evdev access).
 
-After code changes, run `bash update.sh` to deploy — it copies the script, service files, and restarts services. No venv rebuild needed.
+After code changes, run `bash update.sh` to deploy — it copies the script, service files, and restarts running services. No venv rebuild needed. If `requirements.lock` changed since the last install (compared with the copy in `~/.local/share/dictate/`), it refuses and asks for `install.sh` instead.
 
 ### Testing
 
@@ -147,6 +147,8 @@ The `tomli` backport is installed automatically for Python < 3.11.
 ~/.local/bin/dictate-editor       # nvim wrapper
 ~/.local/share/dictate/venv/      # Python venv
 ~/.local/share/dictate/dictate.py # main script (copied from repo)
+~/.local/share/dictate/version    # installed `git describe` (shown on reinstall)
+~/.local/share/dictate/requirements.lock  # lock used for the venv (checked by update.sh)
 ~/.config/dictate/config.toml     # user config
 ~/.config/dictate/hints.d/        # global vocabulary hints
 ```
