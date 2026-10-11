@@ -104,6 +104,7 @@ Server → Daemon:
 - `push_to_talk()` — standalone: evdev key detection + record + transcribe + clipboard
 - `load_hints()` — merges global (`~/.config/dictate/hints.d/`) and project (`.dictate-hints.d/`) hint files
 - `find_audio_device()` — prefers pipewire ALSA device for correct Bluetooth routing
+- `load_model()` — loads the Whisper model from the local cache; network only if not downloaded yet
 - `pick_defaults()` — CUDA auto-detection: GPU → medium/int8, CPU → small/int8
 - `parse_addr()` — parses HOST:PORT strings for network modes
 

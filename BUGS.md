@@ -461,3 +461,24 @@ update.sh refuses if the lock changed, since it never updates the venv.
 
 **Tested**: container test (fedora:44) with a new reinstall step; on the mini
 PC, reinstall over running services — both restarted on the new code.
+
+---
+
+### 30. Daemon took 18 minutes to start — model update check over broken IPv6
+**Date**: 2026-10-11 &ensp; **Commit**: `e9c9b35`
+
+Push-to-talk said "Daemon not running" on the mini PC and the laptop. The
+daemon was stuck at `Loading whisper model 'small'` for 18 minutes
+(SYN-SENT to huggingface.co over IPv6). `WhisperModel()` checks Hugging Face
+for updates on every start, even with the model cached. IPv6 on the LAN was
+broken (stale prefixes from the ISP; IPv4 fine), and Python tries each IPv6
+address with a full timeout before IPv4. Combined with the restart loop when
+the mic is missing (still open), every restart repeated the wait.
+
+**Fix**: `load_model()` loads with `local_files_only=True` first and goes to
+the network only on `LocalEntryNotFoundError` (model not downloaded yet).
+For v0.1.0 installs: `Environment=HF_HUB_OFFLINE=1` in a dictate.service
+drop-in does the same.
+
+**Tested**: mini PC daemon ready in 5s with IPv6 still broken; container
+test (fresh cache, tiny model downloaded) passes.
