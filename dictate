@@ -28,6 +28,7 @@ import numpy as np
 import sounddevice as sd
 from evdev import ecodes
 from faster_whisper import WhisperModel
+from huggingface_hub.errors import LocalEntryNotFoundError
 
 SAMPLE_RATE = 16000
 CONFIG_PATH = os.path.expanduser("~/.config/dictate/config.toml")
@@ -135,6 +136,17 @@ def has_cuda():
         return len(ctranslate2.get_supported_compute_types("cuda")) > 0
     except Exception:
         return False
+
+
+def load_model(name, device, compute_type):
+    """Load from the local Hugging Face cache; go to the network only if the
+    model isn't there. Otherwise every start checks huggingface.co for
+    updates, and on a LAN with broken IPv6 that stalls for minutes."""
+    try:
+        return WhisperModel(name, device=device, compute_type=compute_type, local_files_only=True)
+    except LocalEntryNotFoundError:
+        print(f"Model '{name}' not in cache, downloading...")
+        return WhisperModel(name, device=device, compute_type=compute_type)
 
 
 def pick_defaults():
@@ -648,7 +660,7 @@ def serve(model, language, audio_dev, config, initial_prompt, verbose=False, ser
                         print("Recreating model from scratch...")
                         t0 = _time.monotonic()
                         del model
-                        model = WhisperModel(model_name, device=model_device, compute_type=model_compute)
+                        model = load_model(model_name, model_device, model_compute)
                         elapsed = _time.monotonic() - t0
                         from datetime import datetime
                         with open(LOG_PATH, "a") as lf:
@@ -1179,7 +1191,7 @@ def main():
     if args.serve and args.listen:
         listen_addr = parse_addr(args.listen)
         print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
-        model = WhisperModel(args.model, device=device, compute_type=compute)
+        model = load_model(args.model, device, compute)
         serve_tcp(model, listen_addr, args.language, args.verbose)
         return
 
@@ -1191,7 +1203,7 @@ def main():
             model = None
         else:
             print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
-            model = WhisperModel(args.model, device=device, compute_type=compute)
+            model = load_model(args.model, device, compute)
         serve(model, args.language, audio_dev, config, initial_prompt, args.verbose, server_addr,
               model_name=args.model, model_device=device, model_compute=compute)
         return
@@ -1199,7 +1211,7 @@ def main():
     # Default: push-to-talk (always local)
     audio_dev = find_audio_device()
     print(f"Loading whisper model '{args.model}' on {device} ({compute})...")
-    model = WhisperModel(args.model, device=device, compute_type=compute)
+    model = load_model(args.model, device, compute)
 
     key_name = f"KEY_{args.key.upper()}"
     key_code = getattr(ecodes, key_name, None)
