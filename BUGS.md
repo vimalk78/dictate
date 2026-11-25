@@ -482,3 +482,25 @@ drop-in does the same.
 
 **Tested**: mini PC daemon ready in 5s with IPv6 still broken; container
 test (fresh cache, tiny model downloaded) passes.
+
+---
+
+### 31. Fedora 45 upgrade broke the venv — `No module named 'evdev'`
+**Date**: 2026-11-26 &ensp; **Commit**: `0024825`
+
+After upgrading the mini PC to Fedora 45, dictate.service failed in a restart
+loop with `ModuleNotFoundError: No module named 'evdev'`. The venv linked to
+`/usr/bin/python3`, which went from 3.14 to 3.15; the packages were installed
+under `lib/python3.14`, invisible to 3.15. Rebuilding on 3.15 is not possible
+yet: onnxruntime (required by faster-whisper) has no cp315 wheels in any
+version, and ctranslate2 only from 4.9.1.
+
+**Fix**: install.sh picks the newest system Python in 3.10–3.14 and, when
+`python3` is newer, asks for the parallel package (`sudo dnf install
+python3.14 python3.14-devel`). The venv links to the versioned binary
+(`/usr/bin/python3.14`), so the next distro Python upgrade can't swap it.
+update.sh refuses when the venv can't import its packages.
+
+**Tested**: container test on fedora:45 (two rounds of printed fixes: bare
+image installs python3 = 3.15, then python3.14), fedora:44, ubuntu:24.04,
+ubuntu:22.04. On the mini PC, install.sh prints the python3.14 fix.

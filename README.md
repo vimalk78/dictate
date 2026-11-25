@@ -193,7 +193,7 @@ No GPU required. The `small` model on CPU is good enough for English dictation. 
 
 ## Requirements
 
-- Linux desktop with PipeWire (tested on Fedora 43/44, Ubuntu 22.04/24.04)
+- Linux desktop with PipeWire (tested on Fedora 43/44/45, Ubuntu 22.04/24.04)
 - A microphone (laptop mic, USB mic, AirPods — anything that shows up as an input device)
 - NVIDIA GPU (optional, falls back to CPU)
 
@@ -201,7 +201,7 @@ No GPU required. The `small` model on CPU is good enough for English dictation. 
 
 | Requirement | Why | Fedora | Ubuntu/Debian |
 |---|---|---|---|
-| Python 3.10+ (system `/usr/bin/python3`) | runtime | `python3` | `python3` |
+| Python 3.10–3.14 (system `/usr/bin/python3`, or a parallel `python3.14` if the system one is newer, e.g. Fedora 45) | runtime | `python3` (Fedora 45: `python3.14 python3.14-devel`) | `python3` |
 | [uv](https://docs.astral.sh/uv/) | creates the venv | `uv` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | gcc, Python headers, Linux headers | compile `evdev` (no binary wheels) | `gcc python3-devel kernel-headers` | `gcc python3-dev linux-libc-dev` |
 | PortAudio | audio capture | `portaudio` | `libportaudio2` |
@@ -249,4 +249,4 @@ Removes the services, launcher, venv, and `/dictate` command. Asks before deleti
 - Fedora 43, Intel integrated (no GPU), laptop mic + AirPods
 - Jetson Orin Nano (JetPack 6.x, 8GB), network transcription server
 - Fedora 44, Intel HD 530 (no GPU), USB webcam mic
-- Clean install in containers (`tests/install-test.sh`): Fedora 44, Ubuntu 24.04, Ubuntu 22.04
+- Clean install in containers (`tests/install-test.sh`): Fedora 45, Fedora 44, Ubuntu 24.04, Ubuntu 22.04

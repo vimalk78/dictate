@@ -34,7 +34,7 @@ After code changes, run `bash update.sh` to deploy — it copies the script, ser
 Install test (fresh distro in a podman container — run before each release):
 
 ```bash
-bash tests/install-test.sh fedora:44     # also: ubuntu:24.04, ubuntu:22.04 (Python 3.10, like Jetson)
+bash tests/install-test.sh fedora:45     # also: fedora:44, ubuntu:24.04, ubuntu:22.04 (Python 3.10, like Jetson)
 ```
 
 It runs install.sh on a bare image (must fail with a requirements list), applies the printed fixes, installs, transcribes a speech sample via `--listen`, then checks `uninstall.sh --purge` leaves nothing. It cannot test mic, keyboard, clipboard, or services.
@@ -118,6 +118,7 @@ Server → Daemon:
 
 - **Clipboard via `xsel` (XWayland)**: `wtype` doesn't work on GNOME Wayland, and `wl-copy` can't set the selection without focus; `xsel` has no focus requirement (see BUGS.md)
 - **Pinned dependencies**: `requirements.txt` lists direct deps; `requirements.lock` (generated with `uv pip compile requirements.txt --universal --python-version 3.10 -o requirements.lock`) pins exact versions, with separate entries for Python 3.10. install.sh installs the lock. Regenerating with the old lock in place keeps existing pins where possible
+- **Python 3.10–3.14 only**: onnxruntime/ctranslate2 wheels lag new Python releases. install.sh uses the system python3 if it's in range, else a parallel `/usr/bin/python3.X` (Fedora 45: `python3.14`), and links the venv to the versioned binary so a distro Python upgrade can't break it. Raise `PY_MAX` in install.sh only after regenerating the lock for the newer Python
 - **Installer never uses sudo**: install.sh checks everything first and prints the commands to run; `uv` is required (single install path)
 - **PipeWire preference**: `default` ALSA device doesn't route Bluetooth mic correctly; must use pipewire device by name
 - **`hotwords` removed**: tested but degraded transcription with many terms; `initial_prompt` works better
