@@ -10,8 +10,27 @@ VENV_DIR="$DATA_DIR/venv"
 WHEEL_DIR="$DATA_DIR/wheels"
 SERVICES=(dictate dictate-ptt dictate-server)
 NEW_VERSION=$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)
-# System Python, not whatever is first on PATH (e.g. conda)
-PYTHON=/usr/bin/python3
+# System Python, not whatever is first on PATH (e.g. conda). The pinned
+# packages have wheels only up to 3.PY_MAX (onnxruntime and ctranslate2 lag
+# new Python releases), so when the distro's python3 is newer, use a parallel
+# python3.X package. The venv links to the versioned binary, so a later distro
+# Python upgrade can't swap the interpreter under it.
+PY_MIN=10
+PY_MAX=14   # raise after regenerating requirements.lock for a newer Python
+SYS_MINOR=$(/usr/bin/python3 -c 'import sys; print(sys.version_info[1] if sys.version_info[0] == 3 else 0)' 2>/dev/null || echo 0)
+PYTHON=""
+if [ "$SYS_MINOR" -ge $PY_MIN ] && [ "$SYS_MINOR" -le $PY_MAX ] && [ -x /usr/bin/python3.$SYS_MINOR ]; then
+    PYTHON=/usr/bin/python3.$SYS_MINOR
+elif [ "$SYS_MINOR" -gt $PY_MAX ]; then
+    for m in $(seq $PY_MAX -1 $PY_MIN); do
+        if [ -x /usr/bin/python3.$m ]; then PYTHON=/usr/bin/python3.$m; break; fi
+    done
+fi
+# Package that provides it: the distro default (python3) or a parallel one
+if [ -n "$PYTHON" ]; then PY_PKG=${PYTHON##*/}
+elif [ "$SYS_MINOR" -gt $PY_MAX ]; then PY_PKG=python3.$PY_MAX
+else PY_PKG=python3; fi
+[ "$PY_PKG" = "python3.$SYS_MINOR" ] && PY_PKG=python3
 
 # Detect distro
 if [ -f /etc/os-release ]; then
@@ -44,13 +63,17 @@ require() {
     fi
 }
 
-require "Python 3.10+ ($PYTHON)" \
-    "$PYTHON -c 'import sys; sys.exit(sys.version_info < (3, 10))'" python3 python3
+if [ "$SYS_MINOR" -gt $PY_MAX ]; then
+    PY_DESC="Python 3.$PY_MIN-3.$PY_MAX (system python3 is 3.$SYS_MINOR — dictate's packages don't support it yet)"
+else
+    PY_DESC="Python 3.$PY_MIN-3.$PY_MAX (/usr/bin/python3)"
+fi
+require "$PY_DESC" "test -n '$PYTHON'" "$PY_PKG" "$PY_PKG"
 # evdev has no binary wheels on PyPI — it compiles a C extension
 require "C compiler (gcc, to build evdev)" "command -v gcc" gcc gcc
 require "Python headers (Python.h, to build evdev)" \
-    "$PYTHON -c 'import os, sys, sysconfig; sys.exit(not os.path.exists(os.path.join(sysconfig.get_path(\"include\"), \"Python.h\")))'" \
-    python3-devel python3-dev
+    "test -n '$PYTHON' && $PYTHON -c 'import os, sys, sysconfig; sys.exit(not os.path.exists(os.path.join(sysconfig.get_path(\"include\"), \"Python.h\")))'" \
+    "$PY_PKG-devel" "$PY_PKG-dev"
 require "Linux input headers (to build evdev)" \
     "test -f /usr/include/linux/input.h" kernel-headers linux-libc-dev
 require "PortAudio library (audio capture)" \

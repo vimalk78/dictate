@@ -12,6 +12,12 @@ if ! cmp -s "$SCRIPT_DIR/requirements.lock" "$DATA_DIR/requirements.lock"; then
     echo "Run instead: bash $SCRIPT_DIR/install.sh"
     exit 1
 fi
+# e.g. the distro upgraded the Python an older venv was linked to
+if ! "$DATA_DIR/venv/bin/python" -c 'import evdev, faster_whisper' 2>/dev/null; then
+    echo "The venv can't import dictate's packages (system Python upgraded?)."
+    echo "Run instead: bash $SCRIPT_DIR/install.sh"
+    exit 1
+fi
 
 # Update main script
 cp "$SCRIPT_DIR/dictate" ~/.local/share/dictate/dictate.py

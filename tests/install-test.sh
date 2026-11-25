@@ -51,6 +51,11 @@ if command -v apt-get >/dev/null; then
     apt-get update -qq >/dev/null
     PM=apt
 else
+    # Cisco's openh264 repo is pulled in as a weak dependency and its downloads
+    # fail at times (2026-11: fc45 package on no mirror); real desktops
+    # already have it, so leave it out of the test.
+    sed -i 's/^enabled=1/enabled=0/' /etc/yum.repos.d/fedora-cisco-openh264.repo \
+        /usr/share/dnf5/repos.d/fedora-cisco-openh264.repo 2>/dev/null || true
     dnf install -y -q shadow-utils util-linux >/dev/null   # useradd, su
     PM=dnf
 fi
@@ -65,8 +70,9 @@ echo "$out"
 [ $rc -ne 0 ] || fail "install.sh succeeded on a bare system — requirements check missed something"
 echo "$out" | grep -q "To fix, run:" || fail "no fix instructions printed"
 
-step "2. run the printed fix commands"
-fixes=$(echo "$out" | sed -n '/^To fix, run:/,/^$/p' | sed '1d;/^$/d;s/^  //')
+# apply_fixes <install.sh output> — run the commands it printed, as root for sudo
+apply_fixes() {
+fixes=$(echo "$1" | sed -n '/^To fix, run:/,/^$/p' | sed '1d;/^$/d;s/^  //')
 while IFS= read -r cmd; do
     cmd="${cmd%%#*}"                       # drop trailing comments
     cmd="$(echo "$cmd" | sed 's/[[:space:]]*$//')"
@@ -81,10 +87,25 @@ while IFS= read -r cmd; do
         as_user "$cmd" || fail "fix command failed: $cmd"
     fi
 done <<< "$fixes"
+}
+
+step "2. run the printed fix commands"
+apply_fixes "$out"
 
 step "3. install.sh again (expect: success)"
 # fresh login shell picks up new group membership and ~/.local/bin
-as_user "cd /src && bash install.sh" </dev/null || fail "install.sh failed after applying its own fixes"
+# A bare image has no python3 at all: the first round installs the distro's
+# python3, and if that is newer than the lock supports (Fedora 45: 3.15) the
+# next run asks for a parallel python3.X — allow one more round, like a user would.
+if ! out=$(as_user "cd /src && bash install.sh" </dev/null 2>&1); then
+    echo "$out" | grep -q "^To fix, run:" || { echo "$out"; fail "install.sh failed after applying its own fixes"; }
+    echo "$out" | sed -n '/^Missing requirements:/,/^Then re-run/p'
+    step "3'. second round of printed fixes"
+    apply_fixes "$out"
+    as_user "cd /src && bash install.sh" </dev/null || fail "install.sh failed after two rounds of fixes"
+else
+    echo "$out"
+fi
 
 step "3b. install.sh over an existing install (expect: detected, reinstalled)"
 out=$(as_user "cd /src && bash install.sh" </dev/null 2>&1) || { echo "$out"; fail "reinstall failed"; }
